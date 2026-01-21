@@ -1,15 +1,13 @@
 use smallvec::SmallVec;
 
+use crate::fiber::AnchoredConfig;
+use crate::geometry::IsZero;
+use crate::taffy::ToTaffy;
 use crate::{
-    AnyElement, App, Axis, Bounds, Corner, Display, Edges, Element, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point, Position, Size, Style,
-    Window, point, px,
+    AnyElement, App, Axis, Bounds, Corner, Display, Edges, Element,
+    GlobalElementId, InspectorElementId, IntoElement, ParentElement, Pixels, Point, Position, Size,
+    Style, UpdateResult, VKey, Window, point, px,
 };
-
-/// The state that the anchored element element uses to track its children.
-pub struct AnchoredState {
-    child_layout_ids: SmallVec<[LayoutId; 4]>,
-}
 
 /// An anchored element that can be used to display UI that
 /// will avoid overflowing the window bounds.
@@ -75,6 +73,16 @@ impl Anchored {
         self.fit_mode = AnchoredFitMode::SnapToWindowWithMargin(edges.into());
         self
     }
+
+    pub(crate) fn config(&self) -> AnchoredConfig {
+        AnchoredConfig {
+            anchor_corner: self.anchor_corner,
+            fit_mode: self.fit_mode,
+            anchor_position: self.anchor_position,
+            position_mode: self.position_mode,
+            offset: self.offset,
+        }
+    }
 }
 
 impl ParentElement for Anchored {
@@ -84,7 +92,7 @@ impl ParentElement for Anchored {
 }
 
 impl Element for Anchored {
-    type RequestLayoutState = AnchoredState;
+    type RequestLayoutState = ();
     type PrepaintState = ();
 
     fn id(&self) -> Option<crate::ElementId> {
@@ -99,136 +107,66 @@ impl Element for Anchored {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
+        _window: &mut Window,
+        _cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
-        let child_layout_ids = self
-            .children
-            .iter_mut()
-            .map(|child| child.request_layout(window, cx))
-            .collect::<SmallVec<_>>();
-
-        let anchored_style = Style {
-            position: Position::Absolute,
-            display: Display::Flex,
-            ..Style::default()
-        };
-
-        let layout_id = window.request_layout(anchored_style, child_layout_ids.iter().copied(), cx);
-
-        (layout_id, AnchoredState { child_layout_ids })
+        unreachable!("Anchored uses retained node path")
     }
 
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
     ) {
-        if request_layout.child_layout_ids.is_empty() {
-            return;
-        }
-
-        let mut child_min = point(Pixels::MAX, Pixels::MAX);
-        let mut child_max = Point::default();
-        for child_layout_id in &request_layout.child_layout_ids {
-            let child_bounds = window.layout_bounds(*child_layout_id);
-            child_min = child_min.min(&child_bounds.origin);
-            child_max = child_max.max(&child_bounds.bottom_right());
-        }
-        let size: Size<Pixels> = (child_max - child_min).into();
-
-        let (origin, mut desired) = self.position_mode.get_position_and_bounds(
-            self.anchor_position,
-            self.anchor_corner,
-            size,
-            bounds,
-            self.offset,
-        );
-
-        let limits = Bounds {
-            origin: Point::default(),
-            size: window.viewport_size(),
-        };
-
-        if self.fit_mode == AnchoredFitMode::SwitchAnchor {
-            let mut anchor_corner = self.anchor_corner;
-
-            if desired.left() < limits.left() || desired.right() > limits.right() {
-                let switched = Bounds::from_corner_and_size(
-                    anchor_corner.other_side_corner_along(Axis::Horizontal),
-                    origin,
-                    size,
-                );
-                if !(switched.left() < limits.left() || switched.right() > limits.right()) {
-                    anchor_corner = anchor_corner.other_side_corner_along(Axis::Horizontal);
-                    desired = switched
-                }
-            }
-
-            if desired.top() < limits.top() || desired.bottom() > limits.bottom() {
-                let switched = Bounds::from_corner_and_size(
-                    anchor_corner.other_side_corner_along(Axis::Vertical),
-                    origin,
-                    size,
-                );
-                if !(switched.top() < limits.top() || switched.bottom() > limits.bottom()) {
-                    desired = switched;
-                }
-            }
-        }
-
-        let client_inset = window.client_inset.unwrap_or(px(0.));
-        let edges = match self.fit_mode {
-            AnchoredFitMode::SnapToWindowWithMargin(edges) => edges,
-            _ => Edges::default(),
-        }
-        .map(|edge| *edge + client_inset);
-
-        // Snap the horizontal edges of the anchored element to the horizontal edges of the window if
-        // its horizontal bounds overflow, aligning to the left if it is wider than the limits.
-        if desired.right() > limits.right() {
-            desired.origin.x -= desired.right() - limits.right() + edges.right;
-        }
-        if desired.left() < limits.left() {
-            desired.origin.x = limits.origin.x + edges.left;
-        }
-
-        // Snap the vertical edges of the anchored element to the vertical edges of the window if
-        // its vertical bounds overflow, aligning to the top if it is taller than the limits.
-        if desired.bottom() > limits.bottom() {
-            desired.origin.y -= desired.bottom() - limits.bottom() + edges.bottom;
-        }
-        if desired.top() < limits.top() {
-            desired.origin.y = limits.origin.y + edges.top;
-        }
-
-        let offset = desired.origin - bounds.origin;
-        let offset = point(offset.x.round(), offset.y.round());
-
-        window.with_element_offset(offset, |window| {
-            for child in &mut self.children {
-                child.prepaint(window, cx);
-            }
-        })
+        unreachable!("Anchored uses retained node path")
     }
 
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: crate::Bounds<crate::Pixels>,
+        _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
+        _window: &mut Window,
+        _cx: &mut App,
     ) {
-        for child in &mut self.children {
-            child.paint(window, cx);
-        }
+        unreachable!("Anchored uses retained node path")
+    }
+
+    fn fiber_key(&self) -> VKey {
+        VKey::None
+    }
+
+    fn fiber_children(&self) -> &[AnyElement] {
+        &self.children
+    }
+
+    fn fiber_children_mut(&mut self) -> &mut [AnyElement] {
+        &mut self.children
+    }
+
+    fn create_render_node(&mut self) -> Option<Box<dyn crate::RenderNode>> {
+        Some(Box::new(crate::fiber::AnchoredNode::new(self.config())))
+    }
+
+    fn update_render_node(
+        &mut self,
+        node: &mut dyn crate::RenderNode,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<UpdateResult> {
+        let node = node.downcast_mut::<crate::fiber::AnchoredNode>()?;
+        node.config = self.config();
+        Some(UpdateResult::LAYOUT_CHANGED)
+    }
+
+    fn requires_fiber_layout(&self) -> bool {
+        true
     }
 }
 
