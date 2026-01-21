@@ -10,15 +10,17 @@ use smallvec::SmallVec;
 use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
+    hash::{Hash, Hasher},
     mem,
     ops::Range,
     rc::Rc,
     sync::Arc,
 };
 use util::ResultExt;
+use collections::FxHasher;
 
 impl Element for &'static str {
-    type RequestLayoutState = TextLayout;
+    type RequestLayoutState = ();
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -31,26 +33,24 @@ impl Element for &'static str {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
+        _window: &mut Window,
+        _cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut state = TextLayout::default();
-        let layout_id = state.layout(SharedString::from(*self), None, window, cx);
-        (layout_id, state)
+        unreachable!("&'static str uses retained node path")
     }
 
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        text_layout: &mut Self::RequestLayoutState,
+        _bounds: Bounds<Pixels>,
+        _text_layout: &mut Self::RequestLayoutState,
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self)
+        unreachable!("&'static str uses retained node path")
     }
 
     fn paint(
@@ -58,12 +58,47 @@ impl Element for &'static str {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        text_layout: &mut TextLayout,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
+        _text_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        _window: &mut Window,
+        _cx: &mut App,
     ) {
-        text_layout.paint(self, window, cx)
+        unreachable!("&'static str uses retained node path")
+    }
+
+    fn fiber_key(&self) -> crate::VKey {
+        crate::VKey::None
+    }
+
+    fn fiber_children(&self) -> &[crate::AnyElement] {
+        &[]
+    }
+
+    fn fiber_children_mut(&mut self) -> &mut [crate::AnyElement] {
+        &mut []
+    }
+
+    fn create_render_node(&mut self) -> Option<Box<dyn crate::RenderNode>> {
+        Some(Box::new(crate::fiber::TextNode::new(
+            SharedString::from(*self),
+            None,
+        )))
+    }
+
+    fn update_render_node(
+        &mut self,
+        node: &mut dyn crate::RenderNode,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<UpdateResult> {
+        let node = node.downcast_mut::<crate::fiber::TextNode>()?;
+        node.text = SharedString::from(*self);
+        node.element_id = None;
+        Some(UpdateResult::LAYOUT_CHANGED)
+    }
+
+    fn requires_fiber_layout(&self) -> bool {
+        true
     }
 }
 
