@@ -1,12 +1,14 @@
 use std::{fs, path::Path, sync::Arc};
 
 use crate::{
-    App, Asset, Bounds, Element, GlobalElementId, Hitbox, InspectorElementId, InteractiveElement,
-    Interactivity, IntoElement, LayoutId, Pixels, Point, Radians, SharedString, Size,
-    StyleRefinement, Styled, TransformationMatrix, Window, geometry::Negate as _, point, px,
-    radians, size,
+    App, Asset, Bounds, Element, GlobalElementId, InspectorElementId,
+    InteractiveElement, Interactivity, IntoElement, LayoutId, Pixels, Point, Radians, RenderNode,
+    SharedString, Size, StyleRefinement, Styled, TransformationMatrix, UpdateResult, VKey, Window,
+    point, px, radians, size, taffy::ToTaffy,
 };
-use util::ResultExt;
+use futures::Future;
+use refineable::Refineable;
+use taffy::style::Style as TaffyStyle;
 
 /// An SVG element.
 pub struct Svg {
@@ -46,11 +48,15 @@ impl Svg {
         self.transformation = Some(transformation);
         self
     }
+
+    pub(crate) fn take_interactivity(&mut self) -> Interactivity {
+        std::mem::take(&mut self.interactivity)
+    }
 }
 
 impl Element for Svg {
     type RequestLayoutState = ();
-    type PrepaintState = Option<Hitbox>;
+    type PrepaintState = ();
 
     fn id(&self) -> Option<crate::ElementId> {
         self.interactivity.element_id.clone()
@@ -62,104 +68,84 @@ impl Element for Svg {
 
     fn request_layout(
         &mut self,
-        global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _window: &mut Window,
+        _cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let layout_id = self.interactivity.request_layout(
-            global_id,
-            inspector_id,
-            window,
-            cx,
-            |style, window, cx| window.request_layout(style, None, cx),
-        );
-        (layout_id, ())
+        unreachable!("Svg uses retained node path")
     }
 
     fn prepaint(
         &mut self,
-        global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Hitbox> {
-        self.interactivity.prepaint(
-            global_id,
-            inspector_id,
-            bounds,
-            bounds.size,
-            window,
-            cx,
-            |_, _, hitbox, _, _| hitbox,
-        )
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+        unreachable!("Svg uses retained node path")
     }
 
     fn paint(
         &mut self,
-        global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        hitbox: &mut Option<Hitbox>,
-        window: &mut Window,
-        cx: &mut App,
-    ) where
-        Self: Sized,
-    {
-        self.interactivity.paint(
-            global_id,
-            inspector_id,
-            bounds,
-            hitbox.as_ref(),
-            window,
-            cx,
-            |style, window, cx| {
-                if let Some((path, color)) = self.path.as_ref().zip(style.text.color) {
-                    let transformation = self
-                        .transformation
-                        .as_ref()
-                        .map(|transformation| {
-                            transformation.into_matrix(bounds.center(), window.scale_factor())
-                        })
-                        .unwrap_or_default();
+        _prepaint: &mut Self::PrepaintState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+        unreachable!("Svg uses retained node path")
+    }
 
-                    window
-                        .paint_svg(bounds, path.clone(), None, transformation, color, cx)
-                        .log_err();
-                } else if let Some((path, color)) =
-                    self.external_path.as_ref().zip(style.text.color)
-                {
-                    let Some(bytes) = window
-                        .use_asset::<SvgAsset>(path, cx)
-                        .and_then(|asset| asset.log_err())
-                    else {
-                        return;
-                    };
+    fn fiber_key(&self) -> VKey {
+        VKey::None
+    }
 
-                    let transformation = self
-                        .transformation
-                        .as_ref()
-                        .map(|transformation| {
-                            transformation.into_matrix(bounds.center(), window.scale_factor())
-                        })
-                        .unwrap_or_default();
+    fn fiber_children(&self) -> &[crate::AnyElement] {
+        &[]
+    }
 
-                    window
-                        .paint_svg(
-                            bounds,
-                            path.clone(),
-                            Some(&bytes),
-                            transformation,
-                            color,
-                            cx,
-                        )
-                        .log_err();
-                }
-            },
-        )
+    fn fiber_children_mut(&mut self) -> &mut [crate::AnyElement] {
+        &mut []
+    }
+
+    fn cached_style(&self) -> Option<&StyleRefinement> {
+        Some(&self.interactivity.base_style)
+    }
+
+    fn create_render_node(&mut self) -> Option<Box<dyn RenderNode>> {
+        Some(Box::new(crate::fiber::SvgNode::new(
+            self.path.clone(),
+            self.transformation,
+            self.take_interactivity(),
+        )))
+    }
+
+    fn update_render_node(
+        &mut self,
+        node: &mut dyn RenderNode,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<UpdateResult> {
+        let node = node.downcast_mut::<crate::fiber::SvgNode>()?;
+        node.path = self.path.clone();
+        node.transformation = self.transformation;
+        node.interactivity = self.take_interactivity();
+        Some(UpdateResult::LAYOUT_CHANGED)
+    }
+
+    fn requires_fiber_layout(&self) -> bool {
+        true
+    }
+}
+
+impl Styled for Svg {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.interactivity.base_style
     }
 }
 
@@ -168,12 +154,6 @@ impl IntoElement for Svg {
 
     fn into_element(self) -> Self::Element {
         self
-    }
-}
-
-impl Styled for Svg {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.interactivity.base_style
     }
 }
 
