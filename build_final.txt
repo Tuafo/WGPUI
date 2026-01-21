@@ -1,0 +1,14 @@
+    Checking gpui v0.2.2 (D:\Documents\GitHub\WGPUI\crates\gpui)
+error: unexpected closing delimiter: `)`
+  --> crates\gpui\src\elements\anchored.rs:25:5
+   |
+ 8 |     pub(crate) fn config(&self) -> AnchoredConfig {
+   |                                                   - this opening brace...
+...
+16 |     }
+   |     - ...matches this closing brace
+...
+25 |     ) {
+   |     ^ unexpected closing delimiter
+
+error: could not compile `gpui` (lib) due to 1 previous error

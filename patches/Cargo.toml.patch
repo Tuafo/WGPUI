@@ -1,0 +1,22 @@
+*** Begin Patch
+diff --git a/crates/gpui/Cargo.toml b/crates/gpui/Cargo.toml
+index cd4a96cc45407f..fff730a5bac3d9 100644
+--- a/crates/gpui/Cargo.toml
++++ b/crates/gpui/Cargo.toml
+@@ -18,6 +18,7 @@ workspace = true
+ 
+ [features]
+ default = ["font-kit", "wayland", "x11", "windows-manifest"]
++diagnostics = []
+ test-support = [
+     "leak-detection",
+     "collections/test-support",
+@@ -128,7 +129,6 @@ serde_json.workspace = true
+ slotmap.workspace = true
+ smallvec.workspace = true
+ smol.workspace = true
+-stacksafe.workspace = true
+ strum.workspace = true
+ sum_tree.workspace = true
+ taffy = "=0.9.0"
+*** End Patch

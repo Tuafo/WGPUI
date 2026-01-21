@@ -1,0 +1,14 @@
+*** Begin Patch
+diff --git a/crates/gpui/src/action.rs b/crates/gpui/src/action.rs
+index 38e94aa356dcb7..840bc77cce207e 100644
+--- a/crates/gpui/src/action.rs
++++ b/crates/gpui/src/action.rs
+@@ -291,6 +291,7 @@ impl ActionRegistry {
+     }
+ 
+     #[cfg(test)]
++    #[allow(dead_code)]
+     pub(crate) fn load_action<A: Action>(&mut self) {
+         self.insert_action(MacroActionData {
+             name: A::name_for_type(),
+*** End Patch

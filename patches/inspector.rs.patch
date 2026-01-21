@@ -1,0 +1,15 @@
+*** Begin Patch
+diff --git a/crates/inspector_ui/src/inspector.rs b/crates/inspector_ui/src/inspector.rs
+index a82d27b6d015be..bd840d6eb6a9b6 100644
+--- a/crates/inspector_ui/src/inspector.rs
++++ b/crates/inspector_ui/src/inspector.rs
+@@ -151,7 +151,7 @@ fn render_inspector_id(inspector_id: &InspectorElementId, cx: &App) -> Div {
+                 .tooltip(Tooltip::text(
+                     "GlobalElementId of the nearest ancestor with an ID",
+                 ))
+-                .child(inspector_id.path.global_id.to_string()),
++                .child(format!("{:?}", inspector_id.path.global_id)),
+         )
+ }
+ 
+*** End Patch
