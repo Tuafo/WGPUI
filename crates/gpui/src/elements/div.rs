@@ -20,10 +20,10 @@ use crate::{
     DispatchPhase, Display, Element, ElementId, Entity, FocusHandle, Global,
     GlobalElementId, Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero,
     KeyContext, KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, Length,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Overflow, ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
-    StyleRefinement, Styled, Task, TooltipId, UpdateResult, VKey, Visibility, Window,
-    WindowControlArea, point, px, size, taffy::ToTaffy,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Overflow, ParentElement, Pixels, Point, Render,
+    ScrollWheelEvent, SharedString, Size, Style, StyleRefinement, Styled, Task, TooltipId,
+    UpdateResult, VKey, Visibility, Window, WindowControlArea, point, px, size, taffy::ToTaffy,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -521,7 +521,7 @@ impl Interactivity {
         &mut self,
         predicate: impl Fn(&dyn Any, &mut Window, &mut App) -> bool + 'static,
     ) {
-        self.can_drop_predicate = Some(Box::new(predicate));
+        self.can_drop_predicate = Some(Rc::new(predicate));
     }
 
     /// Bind the given callback to click events of this element.
@@ -558,7 +558,7 @@ impl Interactivity {
         );
         self.drag_listener = Some((
             Arc::new(value),
-            Box::new(move |value, offset, window, cx| {
+            Rc::new(move |value, offset, window, cx| {
                 constructor(value.downcast_ref().unwrap(), offset, window, cx).into()
             }),
         ));
@@ -577,7 +577,7 @@ impl Interactivity {
             self.hover_listener.is_none(),
             "calling on_hover more than once on the same element is not supported"
         );
-        self.hover_listener = Some(Box::new(listener));
+        self.hover_listener = Some(Rc::new(listener));
     }
 
     /// Use the given callback to construct a new tooltip view when the mouse hovers over this element.
@@ -654,7 +654,7 @@ pub trait InteractiveElement: Sized {
     fn id(mut self, id: impl Into<ElementId>) -> Stateful<Self> {
         self.interactivity().element_id = Some(id.into());
 
-        Stateful { element: self }
+        Stateful::from_element(self)
     }
 
     /// Track the focus state of the given focus handle on this element.
@@ -1241,41 +1241,47 @@ pub trait StatefulInteractiveElement: InteractiveElement {
 }
 
 pub(crate) type MouseDownListener =
-    Box<dyn Fn(&MouseDownEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&MouseDownEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 pub(crate) type MouseUpListener =
-    Box<dyn Fn(&MouseUpEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&MouseUpEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+pub(crate) type MousePressureListener =
+    Rc<dyn Fn(&MousePressureEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 
 pub(crate) type MouseMoveListener =
-    Box<dyn Fn(&MouseMoveEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&MouseMoveEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 
 pub(crate) type ScrollWheelListener =
-    Box<dyn Fn(&ScrollWheelEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&ScrollWheelEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 
 pub(crate) type ClickListener = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 pub(crate) type DragListener =
-    Box<dyn Fn(&dyn Any, Point<Pixels>, &mut Window, &mut App) -> AnyView + 'static>;
+    Rc<dyn Fn(&dyn Any, Point<Pixels>, &mut Window, &mut App) -> AnyView + 'static>;
 
-type DropListener = Box<dyn Fn(&dyn Any, &mut Window, &mut App) + 'static>;
+pub(crate) type DropListener = Rc<dyn Fn(&dyn Any, &mut Window, &mut App) + 'static>;
 
-type CanDropPredicate = Box<dyn Fn(&dyn Any, &mut Window, &mut App) -> bool + 'static>;
+pub(crate) type CanDropPredicate =
+    Rc<dyn Fn(&dyn Any, &mut Window, &mut App) -> bool + 'static>;
 
+pub(crate) type HoverListener = Rc<dyn Fn(&bool, &mut Window, &mut App) + 'static>;
+
+#[derive(Clone)]
 pub(crate) struct TooltipBuilder {
-    build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView + 'static>,
-    hoverable: bool,
+    pub(crate) build: Rc<dyn Fn(&mut Window, &mut App) -> AnyView + 'static>,
+    pub(crate) hoverable: bool,
 }
 
 pub(crate) type KeyDownListener =
-    Box<dyn Fn(&KeyDownEvent, DispatchPhase, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&KeyDownEvent, DispatchPhase, &mut Window, &mut App) + 'static>;
 
 pub(crate) type KeyUpListener =
-    Box<dyn Fn(&KeyUpEvent, DispatchPhase, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&KeyUpEvent, DispatchPhase, &mut Window, &mut App) + 'static>;
 
 pub(crate) type ModifiersChangedListener =
-    Box<dyn Fn(&ModifiersChangedEvent, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&ModifiersChangedEvent, &mut Window, &mut App) + 'static>;
 
 pub(crate) type ActionListener =
-    Box<dyn Fn(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
+    Rc<dyn Fn(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
 
 /// Construct a new [`Div`] element
 #[track_caller]
