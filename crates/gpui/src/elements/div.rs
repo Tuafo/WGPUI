@@ -16,19 +16,18 @@
 //! constructed by combining these two systems into an all-in-one element.
 
 use crate::{
-    AbsoluteLength, Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, Bounds, ClickEvent,
-    DispatchPhase, Display, Element, ElementId, Entity, FocusHandle, Global, GlobalElementId,
-    Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext,
-    KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, ModifiersChangedEvent,
-    MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Overflow,
-    ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
-    StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point, px,
-    size,
+    AbsoluteLength, Action, AnyElement, AnyTooltip, AnyView, App, Bounds, ClickEvent,
+    DispatchPhase, Display, Element, ElementId, Entity, FocusHandle, Global,
+    GlobalElementId, Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero,
+    KeyContext, KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, Length,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Overflow, ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
+    StyleRefinement, Styled, Task, TooltipId, UpdateResult, VKey, Visibility, Window,
+    WindowControlArea, point, px, size, taffy::ToTaffy,
 };
 use collections::HashMap;
 use refineable::Refineable;
 use smallvec::SmallVec;
-use stacksafe::{StackSafe, stacksafe};
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
@@ -44,11 +43,12 @@ use util::ResultExt;
 
 use super::ImageCacheProvider;
 
-const DRAG_THRESHOLD: f64 = 2.;
+pub(crate) const DRAG_THRESHOLD: f64 = 2.;
 const TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
 const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);
 
 /// The styling information for a given group.
+#[derive(Clone)]
 pub struct GroupStyle {
     /// The identifier for this group.
     pub group: SharedString,
@@ -114,6 +114,53 @@ impl Interactivity {
         }
     }
 
+    pub(crate) fn diff_styles(&self, new: &Interactivity) -> UpdateResult {
+        fn opt_layout_eq(a: Option<&StyleRefinement>, b: Option<&StyleRefinement>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => a.layout_eq(b),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+
+        fn opt_paint_eq(a: Option<&StyleRefinement>, b: Option<&StyleRefinement>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => a.paint_eq(b),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+
+        let layout_changed = !self.base_style.layout_eq(&new.base_style)
+            || !opt_layout_eq(self.hover_style.as_deref(), new.hover_style.as_deref())
+            || !opt_layout_eq(self.focus_style.as_deref(), new.focus_style.as_deref())
+            || !opt_layout_eq(self.in_focus_style.as_deref(), new.in_focus_style.as_deref())
+            || !opt_layout_eq(
+                self.focus_visible_style.as_deref(),
+                new.focus_visible_style.as_deref(),
+            )
+            || !opt_layout_eq(self.active_style.as_deref(), new.active_style.as_deref());
+
+        let paint_changed = self.element_id != new.element_id
+            || !self.base_style.paint_eq(&new.base_style)
+            || !opt_paint_eq(self.hover_style.as_deref(), new.hover_style.as_deref())
+            || !opt_paint_eq(self.focus_style.as_deref(), new.focus_style.as_deref())
+            || !opt_paint_eq(self.in_focus_style.as_deref(), new.in_focus_style.as_deref())
+            || !opt_paint_eq(
+                self.focus_visible_style.as_deref(),
+                new.focus_visible_style.as_deref(),
+            )
+            || !opt_paint_eq(self.active_style.as_deref(), new.active_style.as_deref());
+
+        if layout_changed {
+            UpdateResult::LAYOUT_CHANGED
+        } else if paint_changed {
+            UpdateResult::PAINT_ONLY
+        } else {
+            UpdateResult::UNCHANGED
+        }
+    }
+
     /// Bind the given callback to the mouse down event for the given mouse button, during the bubble phase.
     /// The imperative API equivalent of [`InteractiveElement::on_mouse_down`].
     ///
@@ -124,7 +171,7 @@ impl Interactivity {
         listener: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_down_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && event.button == button
                     && hitbox.is_hovered(window)
@@ -143,7 +190,7 @@ impl Interactivity {
         listener: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_down_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Capture && hitbox.is_hovered(window) {
                     (listener)(event, window, cx)
                 }
@@ -159,7 +206,7 @@ impl Interactivity {
         listener: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_down_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                     (listener)(event, window, cx)
                 }
@@ -176,7 +223,7 @@ impl Interactivity {
         listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_up_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && event.button == button
                     && hitbox.is_hovered(window)
@@ -195,7 +242,7 @@ impl Interactivity {
         listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_up_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Capture && hitbox.is_hovered(window) {
                     (listener)(event, window, cx)
                 }
@@ -211,7 +258,7 @@ impl Interactivity {
         listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_up_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                     (listener)(event, window, cx)
                 }
@@ -228,7 +275,7 @@ impl Interactivity {
         listener: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_down_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Capture && !hitbox.contains(&window.mouse_position()) {
                     (listener)(event, window, cx)
                 }
@@ -246,7 +293,7 @@ impl Interactivity {
         listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_up_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Capture
                     && event.button == button
                     && !hitbox.is_hovered(window)
@@ -265,7 +312,7 @@ impl Interactivity {
         listener: impl Fn(&MouseMoveEvent, &mut Window, &mut App) + 'static,
     ) {
         self.mouse_move_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                     (listener)(event, window, cx);
                 }
@@ -286,7 +333,7 @@ impl Interactivity {
         T: 'static,
     {
         self.mouse_move_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Capture
                     && let Some(drag) = &cx.active_drag
                     && drag.value.as_ref().type_id() == TypeId::of::<T>()
@@ -314,7 +361,7 @@ impl Interactivity {
         listener: impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
     ) {
         self.scroll_wheel_listeners
-            .push(Box::new(move |event, phase, hitbox, window, cx| {
+            .push(Rc::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     (listener)(event, window, cx);
                 }
@@ -389,7 +436,7 @@ impl Interactivity {
         listener: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
     ) {
         self.key_down_listeners
-            .push(Box::new(move |event, phase, window, cx| {
+            .push(Rc::new(move |event, phase, window, cx| {
                 if phase == DispatchPhase::Bubble {
                     (listener)(event, window, cx)
                 }
@@ -405,7 +452,7 @@ impl Interactivity {
         listener: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
     ) {
         self.key_down_listeners
-            .push(Box::new(move |event, phase, window, cx| {
+            .push(Rc::new(move |event, phase, window, cx| {
                 if phase == DispatchPhase::Capture {
                     listener(event, window, cx)
                 }
@@ -418,7 +465,7 @@ impl Interactivity {
     /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
     pub fn on_key_up(&mut self, listener: impl Fn(&KeyUpEvent, &mut Window, &mut App) + 'static) {
         self.key_up_listeners
-            .push(Box::new(move |event, phase, window, cx| {
+            .push(Rc::new(move |event, phase, window, cx| {
                 if phase == DispatchPhase::Bubble {
                     listener(event, window, cx)
                 }
@@ -434,7 +481,7 @@ impl Interactivity {
         listener: impl Fn(&KeyUpEvent, &mut Window, &mut App) + 'static,
     ) {
         self.key_up_listeners
-            .push(Box::new(move |event, phase, window, cx| {
+            .push(Rc::new(move |event, phase, window, cx| {
                 if phase == DispatchPhase::Capture {
                     listener(event, window, cx)
                 }
@@ -450,7 +497,7 @@ impl Interactivity {
         listener: impl Fn(&ModifiersChangedEvent, &mut Window, &mut App) + 'static,
     ) {
         self.modifiers_changed_listeners
-            .push(Box::new(move |event, window, cx| {
+            .push(Rc::new(move |event, window, cx| {
                 listener(event, window, cx)
             }));
     }
@@ -1473,6 +1520,46 @@ impl Element for Div {
                 },
             )
         });
+    }
+
+    fn fiber_key(&self) -> VKey {
+        VKey::None
+    }
+
+    fn fiber_children(&self) -> &[AnyElement] {
+        &self.children
+    }
+
+    fn fiber_children_mut(&mut self) -> &mut [AnyElement] {
+        &mut self.children
+    }
+
+    fn cached_style(&self) -> Option<&StyleRefinement> {
+        Some(&self.interactivity.base_style)
+    }
+
+    fn create_render_node(&mut self) -> Option<Box<dyn crate::RenderNode>> {
+        Some(Box::new(crate::fiber::DivNode::new(
+            self.interactivity.clone(),
+            mem::take(&mut self.children),
+        )))
+    }
+
+    fn update_render_node(
+        &mut self,
+        node: &mut dyn crate::RenderNode,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<UpdateResult> {
+        let node = node.downcast_mut::<crate::fiber::DivNode>()?;
+        let result = self.interactivity.diff_styles(&node.interactivity);
+        node.interactivity = self.interactivity.clone();
+        node.children = mem::take(&mut self.children);
+        Some(result)
+    }
+
+    fn requires_fiber_layout(&self) -> bool {
+        true
     }
 }
 
