@@ -15,12 +15,12 @@ This is a major architectural change that replaces per-frame element rebuilding 
 - [x] transform.rs - Transform handling (commit 7056a98)
 - [x] deferred.rs - Deferred rendering support (commit 7056a98)
 
-### Phase 2: Core Module Updates ✅ MOSTLY COMPLETE
+### Phase 2: Core Module Updates ✅ COMPLETE
 - [x] gpui.rs - Module declarations (commit ffac92f)
 - [x] Cargo.toml - Dependencies (commit 5604f50)
 - [x] app.rs - App context changes (commit 75e0479)
-- [ ] element.rs - Element trait changes (IN PROGRESS)
-- [ ] window.rs - Window fiber integration
+- [x] element.rs - Element trait changes (commit ca9b8d3)
+- [ ] window.rs - Window fiber integration (IN PROGRESS)
 
 ### Phase 3: Element Implementations
 - [ ] div.rs
@@ -50,14 +50,15 @@ This is a major architectural change that replaces per-frame element rebuilding 
 - [ ] shaders (hlsl, metal, wgsl)
 
 ## Progress Summary
-- Commits so far: 6
+- Commits so far: 8
 - New files added: 6 core fiber modules
-- Core modules updated: 3 (gpui.rs, Cargo.toml, app.rs)
-- Next: Complete element.rs and window.rs updates
+- Core modules updated: 4 (gpui.rs, Cargo.toml, app.rs, element.rs)
+- Next: Complete window.rs fiber integration
 
 ## Notes
 - Started: 2026-01-21
 - Current Phase: Phase 2 - Core updates
 - All new fiber modules successfully added
 - App.rs successfully updated with fiber integration hooks
-- Element.rs is a large patch (~876 lines) requiring careful application
+- Element.rs completely updated with 553 additions (major milestone!)
+- Window.rs is next - this is the final core integration piece
