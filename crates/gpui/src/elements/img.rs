@@ -189,7 +189,8 @@ impl StyledImage for Img {
 
 impl StyledImage for Stateful<Img> {
     fn image_style(&mut self) -> &mut ImageStyle {
-        &mut self.element.style
+        let StatefulInner::Element(element) = &mut self.inner;
+        &mut element.style
     }
 }
 
@@ -238,38 +239,31 @@ impl Img {
             ..self
         }
     }
+
+    pub(crate) fn take_interactivity(&mut self) -> Interactivity {
+        std::mem::take(&mut self.interactivity)
+    }
 }
 
 impl Deref for Stateful<Img> {
     type Target = Img;
 
     fn deref(&self) -> &Self::Target {
-        &self.element
+        let StatefulInner::Element(element) = &self.inner;
+        element
     }
 }
 
 impl DerefMut for Stateful<Img> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.element
+        let StatefulInner::Element(element) = &mut self.inner;
+        element
     }
 }
 
-/// The image state between frames
-struct ImgState {
-    frame_index: usize,
-    last_frame_time: Option<Instant>,
-    started_loading: Option<(Instant, Task<()>)>,
-}
-
-/// The image layout state between frames
-pub struct ImgLayoutState {
-    frame_index: usize,
-    replacement: Option<AnyElement>,
-}
-
 impl Element for Img {
-    type RequestLayoutState = ImgLayoutState;
-    type PrepaintState = Option<Hitbox>;
+    type RequestLayoutState = ();
+    type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
         self.interactivity.element_id.clone()
@@ -281,219 +275,80 @@ impl Element for Img {
 
     fn request_layout(
         &mut self,
-        global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _window: &mut Window,
+        _cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut layout_state = ImgLayoutState {
-            frame_index: 0,
-            replacement: None,
-        };
-
-        window.with_optional_element_state(global_id, |state, window| {
-            let mut state = state.map(|state| {
-                state.unwrap_or(ImgState {
-                    frame_index: 0,
-                    last_frame_time: None,
-                    started_loading: None,
-                })
-            });
-
-            let frame_index = state.as_ref().map(|state| state.frame_index).unwrap_or(0);
-
-            let layout_id = self.interactivity.request_layout(
-                global_id,
-                inspector_id,
-                window,
-                cx,
-                |mut style, window, cx| {
-                    let mut replacement_id = None;
-
-                    match self.source.use_data(
-                        self.image_cache
-                            .clone()
-                            .or_else(|| window.image_cache_stack.last().cloned()),
-                        window,
-                        cx,
-                    ) {
-                        Some(Ok(data)) => {
-                            if let Some(state) = &mut state {
-                                let frame_count = data.frame_count();
-                                if frame_count > 1 {
-                                    let current_time = Instant::now();
-                                    if let Some(last_frame_time) = state.last_frame_time {
-                                        let elapsed = current_time - last_frame_time;
-                                        let frame_duration =
-                                            Duration::from(data.delay(state.frame_index));
-
-                                        if elapsed >= frame_duration {
-                                            state.frame_index =
-                                                (state.frame_index + 1) % frame_count;
-                                            state.last_frame_time =
-                                                Some(current_time - (elapsed - frame_duration));
-                                        }
-                                    } else {
-                                        state.last_frame_time = Some(current_time);
-                                    }
-                                }
-                                state.started_loading = None;
-                            }
-
-                            let image_size = data.render_size(frame_index);
-                            style.aspect_ratio = Some(image_size.width / image_size.height);
-
-                            if let Length::Auto = style.size.width {
-                                style.size.width = match style.size.height {
-                                    Length::Definite(DefiniteLength::Absolute(abs_length)) => {
-                                        let height_px = abs_length.to_pixels(window.rem_size());
-                                        Length::Definite(
-                                            px(image_size.width.0 * height_px.0
-                                                / image_size.height.0)
-                                            .into(),
-                                        )
-                                    }
-                                    _ => Length::Definite(image_size.width.into()),
-                                };
-                            }
-
-                            if let Length::Auto = style.size.height {
-                                style.size.height = match style.size.width {
-                                    Length::Definite(DefiniteLength::Absolute(abs_length)) => {
-                                        let width_px = abs_length.to_pixels(window.rem_size());
-                                        Length::Definite(
-                                            px(image_size.height.0 * width_px.0
-                                                / image_size.width.0)
-                                            .into(),
-                                        )
-                                    }
-                                    _ => Length::Definite(image_size.height.into()),
-                                };
-                            }
-
-                            if global_id.is_some() && data.frame_count() > 1 {
-                                window.request_animation_frame();
-                            }
-                        }
-                        Some(_err) => {
-                            if let Some(fallback) = self.style.fallback.as_ref() {
-                                let mut element = fallback();
-                                replacement_id = Some(element.request_layout(window, cx));
-                                layout_state.replacement = Some(element);
-                            }
-                            if let Some(state) = &mut state {
-                                state.started_loading = None;
-                            }
-                        }
-                        None => {
-                            if let Some(state) = &mut state {
-                                if let Some((started_loading, _)) = state.started_loading {
-                                    if started_loading.elapsed() > LOADING_DELAY
-                                        && let Some(loading) = self.style.loading.as_ref()
-                                    {
-                                        let mut element = loading();
-                                        replacement_id = Some(element.request_layout(window, cx));
-                                        layout_state.replacement = Some(element);
-                                    }
-                                } else {
-                                    let current_view = window.current_view();
-                                    let task = window.spawn(cx, async move |cx| {
-                                        cx.background_executor().timer(LOADING_DELAY).await;
-                                        cx.update(move |_, cx| {
-                                            cx.notify(current_view);
-                                        })
-                                        .ok();
-                                    });
-                                    state.started_loading = Some((Instant::now(), task));
-                                }
-                            }
-                        }
-                    }
-
-                    window.request_layout(style, replacement_id, cx)
-                },
-            );
-
-            layout_state.frame_index = frame_index;
-
-            ((layout_id, layout_state), state)
-        })
+        unreachable!("Img uses retained node path")
     }
 
     fn prepaint(
         &mut self,
-        global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
     ) -> Self::PrepaintState {
-        self.interactivity.prepaint(
-            global_id,
-            inspector_id,
-            bounds,
-            bounds.size,
-            window,
-            cx,
-            |_, _, hitbox, window, cx| {
-                if let Some(replacement) = &mut request_layout.replacement {
-                    replacement.prepaint(window, cx);
-                }
-
-                hitbox
-            },
-        )
+        unreachable!("Img uses retained node path")
     }
 
     fn paint(
         &mut self,
-        global_id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        layout_state: &mut Self::RequestLayoutState,
-        hitbox: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
+        _global_id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _layout_state: &mut Self::RequestLayoutState,
+        _hitbox: &mut Self::PrepaintState,
+        _window: &mut Window,
+        _cx: &mut App,
     ) {
-        let source = self.source.clone();
-        self.interactivity.paint(
-            global_id,
-            inspector_id,
-            bounds,
-            hitbox.as_ref(),
-            window,
-            cx,
-            |style, window, cx| {
-                if let Some(Ok(data)) = source.use_data(
-                    self.image_cache
-                        .clone()
-                        .or_else(|| window.image_cache_stack.last().cloned()),
-                    window,
-                    cx,
-                ) {
-                    let new_bounds = self
-                        .style
-                        .object_fit
-                        .get_bounds(bounds, data.size(layout_state.frame_index));
-                    let corner_radii = style
-                        .corner_radii
-                        .to_pixels(window.rem_size())
-                        .clamp_radii_for_quad_size(new_bounds.size);
-                    window
-                        .paint_image(
-                            new_bounds,
-                            corner_radii,
-                            data,
-                            layout_state.frame_index,
-                            self.style.grayscale,
-                        )
-                        .log_err();
-                } else if let Some(replacement) = &mut layout_state.replacement {
-                    replacement.paint(window, cx);
-                }
-            },
-        )
+        unreachable!("Img uses retained node path")
+    }
+
+    fn fiber_key(&self) -> VKey {
+        VKey::None
+    }
+
+    fn fiber_children(&self) -> &[AnyElement] {
+        &[]
+    }
+
+    fn fiber_children_mut(&mut self) -> &mut [AnyElement] {
+        &mut []
+    }
+
+    fn cached_style(&self) -> Option<&StyleRefinement> {
+        Some(&self.interactivity.base_style)
+    }
+
+    fn create_render_node(&mut self) -> Option<Box<dyn crate::RenderNode>> {
+        Some(Box::new(crate::fiber::ImgNode::new(
+            self.source.clone(),
+            self.take_interactivity(),
+            self.style.clone(),
+            self.image_cache.clone(),
+        )))
+    }
+
+    fn update_render_node(
+        &mut self,
+        node: &mut dyn crate::RenderNode,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<UpdateResult> {
+        let node = node.downcast_mut::<crate::fiber::ImgNode>()?;
+        node.source = self.source.clone();
+        node.interactivity = self.take_interactivity();
+        node.style = self.style.clone();
+        node.image_cache = self.image_cache.clone();
+        Some(UpdateResult::LAYOUT_CHANGED)
+    }
+
+    fn requires_fiber_layout(&self) -> bool {
+        true
     }
 }
 
