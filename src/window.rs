@@ -21,8 +21,6 @@ use crate::{
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
-#[cfg(target_os = "macos")]
-use core_video::pixel_buffer::CVPixelBuffer;
 use derive_more::{Deref, DerefMut};
 use futures::FutureExt;
 use futures::channel::oneshot;
@@ -1004,7 +1002,6 @@ impl Window {
             app_id,
             window_min_size,
             window_decorations,
-            #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
         } = options;
 
@@ -1022,7 +1019,6 @@ impl Window {
                 show,
                 display_id,
                 window_min_size,
-                #[cfg(target_os = "macos")]
                 tabbing_identifier,
             },
         )?;
@@ -2085,17 +2081,8 @@ impl Window {
 
     /// Returns whether this window is considered to be the window
     /// that currently owns the mouse cursor.
-    /// On mac, this is equivalent to `is_window_active`.
     pub fn is_window_hovered(&self) -> bool {
-        if cfg!(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "freebsd"
-        )) {
-            self.hovered.get()
-        } else {
-            self.is_window_active()
-        }
+        self.hovered.get()
     }
 
     /// Toggle zoom on the window.
@@ -3554,26 +3541,6 @@ impl Window {
         Ok(())
     }
 
-    /// Paint a macOS CoreVideo surface into the scene for the next frame at the current z-index.
-    ///
-    /// This method should only be called as part of the paint phase of element drawing.
-    #[cfg(target_os = "macos")]
-    pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
-        use crate::{PaintSurface, scene::SurfaceContent};
-
-        self.invalidator.debug_assert_paint();
-
-        let scale_factor = self.scale_factor();
-        let bounds = bounds.scale(scale_factor);
-        let content_mask = self.content_mask().scale(scale_factor);
-        self.next_frame.scene.insert_primitive(PaintSurface {
-            order: 0,
-            bounds,
-            content_mask,
-            content: SurfaceContent::CoreVideo(image_buffer),
-        });
-    }
-
     /// Paint a WGPU surface into the scene for the next frame at the current z-index.
     /// The renderer will look up the front buffer texture from the `SurfaceRegistry`
     /// using the given `SurfaceId`.
@@ -3613,7 +3580,8 @@ impl Window {
         height: u32,
         format: wgpu::TextureFormat,
     ) -> Option<crate::WgpuSurfaceHandle> {
-        self.platform_window.create_wgpu_surface(width, height, format)
+        self.platform_window
+            .create_wgpu_surface(width, height, format)
     }
 
     /// Removes an image from the sprite atlas.

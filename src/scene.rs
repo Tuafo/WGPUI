@@ -1,6 +1,3 @@
-// todo("windows"): remove
-#![cfg_attr(windows, allow(dead_code))]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -137,13 +134,6 @@ impl Scene {
         self.surfaces.sort_by_key(|surface| surface.order);
     }
 
-    #[cfg_attr(
-        all(
-            any(target_os = "linux", target_os = "freebsd"),
-            not(any(feature = "x11", feature = "wayland"))
-        ),
-        allow(dead_code)
-    )]
     pub(crate) fn batches(&self) -> impl Iterator<Item = PrimitiveBatch<'_>> {
         BatchIterator {
             shadows: &self.shadows,
@@ -172,13 +162,6 @@ impl Scene {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 pub(crate) enum PrimitiveKind {
     Shadow,
     #[default]
@@ -233,13 +216,6 @@ impl Primitive {
     }
 }
 
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 struct BatchIterator<'a> {
     shadows: &'a [Shadow],
     shadows_start: usize,
@@ -426,13 +402,6 @@ impl<'a> Iterator for BatchIterator<'a> {
 }
 
 #[derive(Debug)]
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 pub(crate) enum PrimitiveBatch<'a> {
     Shadows(&'a [Shadow]),
     Quads(&'a [Quad]),
@@ -657,9 +626,6 @@ impl From<PolychromeSprite> for Primitive {
 /// The backing content for a painted surface.
 #[derive(Clone, Debug)]
 pub(crate) enum SurfaceContent {
-    /// A macOS CoreVideo pixel buffer.
-    #[cfg(target_os = "macos")]
-    CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
     /// A WGPU surface managed by the SurfaceRegistry.
     Wgpu(SurfaceId),
 }

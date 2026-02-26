@@ -43,12 +43,7 @@ pub struct FontFamilyId(pub usize);
 
 pub(crate) const SUBPIXEL_VARIANTS_X: u8 = 4;
 
-pub(crate) const SUBPIXEL_VARIANTS_Y: u8 =
-    if cfg!(target_os = "windows") || cfg!(target_os = "linux") {
-        1
-    } else {
-        SUBPIXEL_VARIANTS_X
-    };
+pub(crate) const SUBPIXEL_VARIANTS_Y: u8 = 1;
 
 /// The GPUI text rendering sub system.
 pub struct TextSystem {
@@ -751,15 +746,6 @@ pub struct TextRun {
     pub underline: Option<UnderlineStyle>,
     /// The strikethrough style (if any)
     pub strikethrough: Option<StrikethroughStyle>,
-}
-
-#[cfg(all(target_os = "macos", test))]
-impl TextRun {
-    fn with_len(&self, len: usize) -> Self {
-        let mut this = self.clone();
-        this.len = len;
-        this
-    }
 }
 
 /// An identifier for a specific glyph, as returned by [`WindowTextSystem::layout_line`].
