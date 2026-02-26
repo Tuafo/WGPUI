@@ -31,7 +31,6 @@ mod path_builder;
 mod platform;
 pub mod prelude;
 mod profiler;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod queue;
 mod scene;
 mod shared_string;
@@ -92,7 +91,6 @@ pub use keymap::*;
 pub use path_builder::*;
 pub use platform::*;
 pub use profiler::*;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub(crate) use queue::{PriorityQueueReceiver, PriorityQueueSender};
 pub use refineable::*;
 pub use scene::*;

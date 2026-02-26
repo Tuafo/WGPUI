@@ -2,7 +2,7 @@ use crate::{
     AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DevicePixels,
     DummyKeyboardMapper, ForegroundExecutor, Keymap, NoopTextSystem, Platform, PlatformDisplay,
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PromptButton,
-    SourceMetadata, Task, TestDisplay, TestWindow, WindowAppearance, WindowParams, size,
+    Task, TestDisplay, TestWindow, WindowAppearance, WindowParams, size,
 };
 use anyhow::Result;
 use collections::VecDeque;
@@ -14,11 +14,6 @@ use std::{
     rc::{Rc, Weak},
     sync::Arc,
 };
-#[cfg(target_os = "windows")]
-use windows::Win32::{
-    Graphics::Imaging::{CLSID_WICImagingFactory, IWICImagingFactory},
-    System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
-};
 
 /// TestPlatform implements the Platform trait for use in tests.
 pub(crate) struct TestPlatform {
@@ -29,14 +24,10 @@ pub(crate) struct TestPlatform {
     active_display: Rc<dyn PlatformDisplay>,
     active_cursor: Mutex<CursorStyle>,
     current_clipboard_item: Mutex<Option<ClipboardItem>>,
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    current_primary_item: Mutex<Option<ClipboardItem>>,
     pub(crate) prompts: RefCell<TestPrompts>,
     pub opened_url: RefCell<Option<String>>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart: RefCell<Option<oneshot::Sender<Option<PathBuf>>>>,
-    #[cfg(target_os = "windows")]
-    bitmap_factory: std::mem::ManuallyDrop<IWICImagingFactory>,
     weak: Weak<Self>,
 }
 
@@ -55,16 +46,6 @@ pub(crate) struct TestPrompts {
 
 impl TestPlatform {
     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
-        #[cfg(target_os = "windows")]
-        let bitmap_factory = unsafe {
-            windows::Win32::System::Ole::OleInitialize(None)
-                .expect("unable to initialize Windows OLE");
-            std::mem::ManuallyDrop::new(
-                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
-                    .expect("Error creating bitmap factory."),
-            )
-        };
-
         let text_system = Arc::new(NoopTextSystem);
 
         Rc::new_cyclic(|weak| TestPlatform {
@@ -76,12 +57,8 @@ impl TestPlatform {
             active_window: Default::default(),
             expect_restart: Default::default(),
             current_clipboard_item: Mutex::new(None),
-            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-            current_primary_item: Mutex::new(None),
             weak: weak.clone(),
             opened_url: Default::default(),
-            #[cfg(target_os = "windows")]
-            bitmap_factory,
             text_system,
         })
     }
@@ -239,26 +216,6 @@ impl Platform for TestPlatform {
         Some(self.active_display.clone())
     }
 
-    #[cfg(feature = "screen-capture")]
-    fn is_screen_capture_supported(&self) -> bool {
-        true
-    }
-
-    #[cfg(feature = "screen-capture")]
-    fn screen_capture_sources(
-        &self,
-    ) -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
-        let (mut tx, rx) = oneshot::channel();
-        tx.send(Ok(self
-            .screen_capture_sources
-            .borrow()
-            .iter()
-            .map(|source| Rc::new(source.clone()) as Rc<dyn ScreenCaptureSource>)
-            .collect()))
-            .ok();
-        rx
-    }
-
     fn active_window(&self) -> Option<crate::AnyWindowHandle> {
         self.active_window
             .borrow()
@@ -355,18 +312,8 @@ impl Platform for TestPlatform {
         false
     }
 
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn write_to_primary(&self, item: ClipboardItem) {
-        *self.current_primary_item.lock() = Some(item);
-    }
-
     fn write_to_clipboard(&self, item: ClipboardItem) {
         *self.current_clipboard_item.lock() = Some(item);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn read_from_primary(&self) -> Option<ClipboardItem> {
-        self.current_primary_item.lock().clone()
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
@@ -391,16 +338,6 @@ impl Platform for TestPlatform {
 
     fn open_with_system(&self, _path: &Path) {
         unimplemented!()
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for TestPlatform {
-    fn drop(&mut self) {
-        unsafe {
-            std::mem::ManuallyDrop::drop(&mut self.bitmap_factory);
-            windows::Win32::System::Ole::OleUninitialize();
-        }
     }
 }
 
