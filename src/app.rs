@@ -46,6 +46,7 @@ use crate::{
     default_colors::{Colors, GlobalColors},
     hash, init_app_menus,
 };
+use crate::ExternalWindowHandle;
 
 mod async_context;
 mod context;
