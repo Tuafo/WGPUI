@@ -5,7 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, ObjectFit, Pixels, Point, Radians, ScaledPixels, Size, SurfaceSource, bounds_tree::BoundsTree, point
+    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
+    Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree,
+    platform::cross::surface_registry::SurfaceId, point,
 };
 use std::{
     fmt::Debug,
@@ -652,13 +654,22 @@ impl From<PolychromeSprite> for Primitive {
     }
 }
 
+/// The backing content for a painted surface.
+#[derive(Clone, Debug)]
+pub(crate) enum SurfaceContent {
+    /// A macOS CoreVideo pixel buffer.
+    #[cfg(target_os = "macos")]
+    CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
+    /// A WGPU surface managed by the SurfaceRegistry.
+    Wgpu(SurfaceId),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
-    pub object_fit: ObjectFit,
-    pub source: SurfaceSource
+    pub content: SurfaceContent,
 }
 
 impl From<PaintSurface> for Primitive {
