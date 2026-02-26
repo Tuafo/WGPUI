@@ -10,7 +10,7 @@ mod surface;
 mod svg;
 mod text;
 mod uniform_list;
-mod gpu_canvas;
+mod wgpu_surface;
 
 pub use anchored::*;
 pub use animation::*;
@@ -24,4 +24,4 @@ pub use surface::*;
 pub use svg::*;
 pub use text::*;
 pub use uniform_list::*;
-pub use gpu_canvas::*;
+pub use wgpu_surface::*;
