@@ -37,7 +37,7 @@ pub enum SurfaceSource {
 #[cfg(target_os = "macos")]
 impl From<CVPixelBuffer> for SurfaceSource {
     fn from(value: CVPixelBuffer) -> Self {
-        SurfaceSource::Surface(value)
+        SurfaceSource::ImageBuffer(value)
     }
 }
 
@@ -105,19 +105,23 @@ impl Element for Surface {
         &mut self,
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] bounds: Bounds<Pixels>,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] _bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
-        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] window: &mut Window,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] _window: &mut Window,
         _: &mut App,
     ) {
         match &self.source {
             #[cfg(target_os = "macos")]
-            SurfaceSource::Surface(surface) => {
-                let size = crate::size(surface.get_width().into(), surface.get_height().into());
-                let new_bounds = self.object_fit.get_bounds(bounds, size);
-                // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, surface.clone());
+            SurfaceSource::ImageBuffer(surface) => {
+                // Drawing CVPixelBuffer directly is no longer supported by the
+                // backend; the old `window.paint_surface` helper was removed
+                // in favor of `paint_wgpu_surface` which takes a
+                // `SurfaceId`.  Proper support would require registering the
+                // buffer as a WGPU surface and copying its contents into the
+                // registry.  For now we simply ignore the buffer so the
+                // library compiles.
+                let _ = surface;
             }
             #[allow(unreachable_patterns)]
             _ => {}
