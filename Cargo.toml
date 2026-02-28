@@ -32,7 +32,7 @@ doctest = false
 [dependencies]
 pollster = "0.4.0"
 winit = "0.30.12"
-wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "3e358c27b317efc9926836b664c44006b5bcd7e2" }
+wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "fce5b80e8017304449124b12637ec324417e40c8" }
 priority-threadpool = { git = "https://github.com/mdeand/priority-threadpool" }
 anyhow = "1.0.86"
 async-task = "4.7"
