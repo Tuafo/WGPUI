@@ -6,8 +6,8 @@ use crate::{
 use anyhow::{Context as _, Ok, Result};
 use collections::HashMap;
 use cosmic_text::{
-    Attrs, AttrsList, CacheKey, Family, Font as CosmicTextFont, FontFeatures as CosmicFontFeatures,
-    FontSystem, ShapeBuffer, ShapeLine, SwashCache,
+    Attrs, AttrsList, CacheKey, Ellipsize, Family, Font as CosmicTextFont,
+    FontFeatures as CosmicFontFeatures, FontSystem, Hinting, ShapeBuffer, ShapeLine, SwashCache,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
@@ -45,6 +45,7 @@ struct CosmicTextSystemState {
 
 struct LoadedFont {
     font: Arc<CosmicTextFont>,
+    weight: cosmic_text::fontdb::Weight,
     features: CosmicFontFeatures,
     is_known_emoji_font: bool,
 }
@@ -101,7 +102,6 @@ impl PlatformTextSystem for CosmicTextSystem {
             state.font_ids_by_family_cache[&key].as_ref()
         };
 
-        // todo(linux) ideally we would make fontdb's `find_best_match` pub instead of using font-kit here
         let candidate_properties = candidates
             .iter()
             .map(|font_id| {
@@ -111,9 +111,8 @@ impl PlatformTextSystem for CosmicTextSystem {
             })
             .collect::<SmallVec<[_; 4]>>();
 
-        let ix =
-            font_kit::matching::find_best_match(&candidate_properties, &font_into_properties(font))
-                .context("requested font family contains no font matching the other parameters")?;
+        let ix = find_best_match(&candidate_properties, &font_into_properties(font))
+            .context("requested font family contains no font matching the other parameters")?;
 
         Ok(candidates[ix])
     }
@@ -219,14 +218,14 @@ impl CosmicTextSystemState {
             .db()
             .faces()
             .filter(|face| face.families.iter().any(|family| *name == family.0))
-            .map(|face| (face.id, face.post_script_name.clone()))
+            .map(|face| (face.id, face.post_script_name.clone(), face.weight))
             .collect::<SmallVec<[_; 4]>>();
 
         let mut loaded_font_ids = SmallVec::new();
-        for (font_id, postscript_name) in families {
+        for (font_id, postscript_name, weight) in families {
             let font = self
                 .font_system
-                .get_font(font_id)
+                .get_font(font_id, weight)
                 .context("Could not load font")?;
 
             // HACK: To let the storybook run and render Windows caption icons. We should actually do better font fallback.
@@ -246,6 +245,7 @@ impl CosmicTextSystemState {
             loaded_font_ids.push(font_id);
             self.loaded_fonts.push(LoadedFont {
                 font,
+                weight,
                 features: features.try_into()?,
                 is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
             });
@@ -272,7 +272,9 @@ impl CosmicTextSystemState {
     }
 
     fn raster_bounds(&mut self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        let font = &self.loaded_fonts[params.font_id.0].font;
+        let loaded_font = &self.loaded_fonts[params.font_id.0];
+        let font = &loaded_font.font;
+        let weight = loaded_font.weight;
         let subpixel_shift = point(
             params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
             params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
@@ -286,6 +288,7 @@ impl CosmicTextSystemState {
                     params.glyph_id.0 as u16,
                     (params.font_size * params.scale_factor).into(),
                     (subpixel_shift.x, subpixel_shift.y.trunc()),
+                    weight,
                     cosmic_text::CacheKeyFlags::empty(),
                 )
                 .0,
@@ -308,7 +311,9 @@ impl CosmicTextSystemState {
             anyhow::bail!("glyph bounds are empty");
         } else {
             let bitmap_size = glyph_bounds.size;
-            let font = &self.loaded_fonts[params.font_id.0].font;
+            let loaded_font = &self.loaded_fonts[params.font_id.0];
+            let font = &loaded_font.font;
+            let weight = loaded_font.weight;
             let subpixel_shift = point(
                 params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
                 params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
@@ -322,6 +327,7 @@ impl CosmicTextSystemState {
                         params.glyph_id.0 as u16,
                         (params.font_size * params.scale_factor).into(),
                         (subpixel_shift.x, subpixel_shift.y.trunc()),
+                        weight,
                         cosmic_text::CacheKeyFlags::empty(),
                     )
                     .0,
@@ -356,14 +362,17 @@ impl CosmicTextSystemState {
         {
             FontId(ix)
         } else {
-            let font = self.font_system.get_font(id).unwrap();
             let face = self.font_system.db().face(id).unwrap();
+            let weight = face.weight;
+            let postscript_name = face.post_script_name.clone();
+            let font = self.font_system.get_font(id, weight).unwrap();
 
             let font_id = FontId(self.loaded_fonts.len());
             self.loaded_fonts.push(LoadedFont {
                 font,
+                weight,
                 features: CosmicFontFeatures::new(),
-                is_known_emoji_font: check_is_known_emoji_font(&face.post_script_name),
+                is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
             });
 
             font_id
@@ -404,9 +413,11 @@ impl CosmicTextSystemState {
             font_size.0,
             None, // We do our own wrapping
             cosmic_text::Wrap::None,
+            Ellipsize::None,
             None,
             &mut layout_lines,
             None,
+            Hinting::default(),
         );
         let layout = layout_lines.first().unwrap();
 
@@ -547,6 +558,155 @@ fn font_into_properties(font: &crate::Font) -> font_kit::properties::Properties 
         weight: font_kit::properties::Weight(font.weight.0),
         stretch: Default::default(),
     }
+}
+
+/// CSS Fonts Level 3 § 5.2 best-match algorithm.
+/// Copied from font-kit's private `matching` module to avoid depending on the
+/// zed-font-kit fork which made that module public.
+/// https://drafts.csswg.org/css-fonts-3/#font-style-matching
+fn find_best_match(
+    candidates: &[font_kit::properties::Properties],
+    query: &font_kit::properties::Properties,
+) -> Result<usize> {
+    use font_kit::properties::{Stretch, Style, Weight};
+
+    let mut matching_set: Vec<usize> = (0..candidates.len()).collect();
+    if matching_set.is_empty() {
+        anyhow::bail!("no candidate fonts");
+    }
+
+    // Step 4a (`font-stretch`).
+    let matching_stretch = if matching_set
+        .iter()
+        .any(|&index| candidates[index].stretch == query.stretch)
+    {
+        query.stretch
+    } else if query.stretch <= Stretch::NORMAL {
+        match matching_set
+            .iter()
+            .filter(|&&index| candidates[index].stretch < query.stretch)
+            .min_by(|&&a, &&b| {
+                (query.stretch.0 - candidates[a].stretch.0)
+                    .total_cmp(&(query.stretch.0 - candidates[b].stretch.0))
+            }) {
+            Some(&matching_index) => candidates[matching_index].stretch,
+            None => {
+                let matching_index = *matching_set
+                    .iter()
+                    .min_by(|&&a, &&b| {
+                        (candidates[a].stretch.0 - query.stretch.0)
+                            .total_cmp(&(candidates[b].stretch.0 - query.stretch.0))
+                    })
+                    .expect("matching_set is non-empty");
+                candidates[matching_index].stretch
+            }
+        }
+    } else {
+        match matching_set
+            .iter()
+            .filter(|&&index| candidates[index].stretch > query.stretch)
+            .min_by(|&&a, &&b| {
+                (candidates[a].stretch.0 - query.stretch.0)
+                    .total_cmp(&(candidates[b].stretch.0 - query.stretch.0))
+            }) {
+            Some(&matching_index) => candidates[matching_index].stretch,
+            None => {
+                let matching_index = *matching_set
+                    .iter()
+                    .min_by(|&&a, &&b| {
+                        (query.stretch.0 - candidates[a].stretch.0)
+                            .total_cmp(&(query.stretch.0 - candidates[b].stretch.0))
+                    })
+                    .expect("matching_set is non-empty");
+                candidates[matching_index].stretch
+            }
+        }
+    };
+    matching_set.retain(|&index| candidates[index].stretch == matching_stretch);
+
+    // Step 4b (`font-style`).
+    let style_preference = match query.style {
+        Style::Italic => [Style::Italic, Style::Oblique, Style::Normal],
+        Style::Oblique => [Style::Oblique, Style::Italic, Style::Normal],
+        Style::Normal => [Style::Normal, Style::Oblique, Style::Italic],
+    };
+    let matching_style = *style_preference
+        .iter()
+        .find(|&query_style| {
+            matching_set
+                .iter()
+                .any(|&index| candidates[index].style == *query_style)
+        })
+        .expect("matching_set is non-empty");
+    matching_set.retain(|&index| candidates[index].style == matching_style);
+
+    // Step 4c (`font-weight`).
+    let matching_weight = if matching_set
+        .iter()
+        .any(|&index| candidates[index].weight == query.weight)
+    {
+        query.weight
+    } else if query.weight >= Weight(400.0)
+        && query.weight < Weight(450.0)
+        && matching_set
+            .iter()
+            .any(|&index| candidates[index].weight == Weight(500.0))
+    {
+        Weight(500.0)
+    } else if query.weight >= Weight(450.0)
+        && query.weight <= Weight(500.0)
+        && matching_set
+            .iter()
+            .any(|&index| candidates[index].weight == Weight(400.0))
+    {
+        Weight(400.0)
+    } else if query.weight <= Weight(500.0) {
+        match matching_set
+            .iter()
+            .filter(|&&index| candidates[index].weight <= query.weight)
+            .min_by(|&&a, &&b| {
+                (query.weight.0 - candidates[a].weight.0)
+                    .total_cmp(&(query.weight.0 - candidates[b].weight.0))
+            }) {
+            Some(&matching_index) => candidates[matching_index].weight,
+            None => {
+                let matching_index = *matching_set
+                    .iter()
+                    .min_by(|&&a, &&b| {
+                        (candidates[a].weight.0 - query.weight.0)
+                            .total_cmp(&(candidates[b].weight.0 - query.weight.0))
+                    })
+                    .expect("matching_set is non-empty");
+                candidates[matching_index].weight
+            }
+        }
+    } else {
+        match matching_set
+            .iter()
+            .filter(|&&index| candidates[index].weight >= query.weight)
+            .min_by(|&&a, &&b| {
+                (candidates[a].weight.0 - query.weight.0)
+                    .total_cmp(&(candidates[b].weight.0 - query.weight.0))
+            }) {
+            Some(&matching_index) => candidates[matching_index].weight,
+            None => {
+                let matching_index = *matching_set
+                    .iter()
+                    .min_by(|&&a, &&b| {
+                        (query.weight.0 - candidates[a].weight.0)
+                            .total_cmp(&(query.weight.0 - candidates[b].weight.0))
+                    })
+                    .expect("matching_set is non-empty");
+                candidates[matching_index].weight
+            }
+        }
+    };
+    matching_set.retain(|&index| candidates[index].weight == matching_weight);
+
+    matching_set
+        .into_iter()
+        .next()
+        .context("no matching font found")
 }
 
 fn face_info_into_properties(

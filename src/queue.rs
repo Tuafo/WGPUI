@@ -1,10 +1,10 @@
+use crate::Priority;
+use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use std::{
     fmt,
     iter::FusedIterator,
     sync::{Arc, atomic::AtomicUsize},
 };
-use rand::{Rng, SeedableRng, rngs::SmallRng};
-use crate::Priority;
 
 struct PriorityQueues<T> {
     high_priority: Vec<T>,
