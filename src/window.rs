@@ -2301,23 +2301,6 @@ impl Window {
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
-        // The frame we just swapped into `rendered_frame` may still contain
-        // `AnyElement` values inside deferred draws. These are allocated in the
-        // global element arena which will be cleared by the caller as soon as
-        // `draw` returns. If we leave those elements around they would become
-        // invalid after the arena is cleared and any later attempt to use them
-        // would panic (see the panic in `arena::validate`).
-        //
-        // We don't need to keep the actual element object around for reuse –
-        // deferred draws are always recalculated each frame – so make sure we
-        // drop the stored `AnyElement` now. Clearing the option here keeps the
-        // rest of the deferred draw data intact for the remainder of this
-        // frame and avoids carrying live arena references across the
-        // `ArenaClearNeeded` boundary.
-        for deferred_draw in &mut self.rendered_frame.deferred_draws {
-            deferred_draw.element = None;
-        }
-
         self.next_frame.clear();
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
@@ -5562,7 +5545,7 @@ pub fn fill(bounds: impl Into<Bounds<Pixels>>, background: impl Into<Background>
 
 /// Creates a rectangle outline with the given bounds, border color, and a 1px border width
 pub fn outline(
-    bounds: impl Into<Bounds<Pixels>>, 
+    bounds: impl Into<Bounds<Pixels>>,
     border_color: impl Into<Hsla>,
     border_style: BorderStyle,
 ) -> PaintQuad {
@@ -5573,45 +5556,5 @@ pub fn outline(
         border_widths: (1.).into(),
         border_color: border_color.into(),
         border_style,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::TestAppContext;
-    use crate::elements::div;
-    use crate::{PrepaintStateIndex, PaintIndex, Point, DispatchNodeId};
-
-    #[gpui::test]
-    fn deferred_draws_are_dropped_before_arena_clear() {
-        let mut cx = TestAppContext::single();
-        let mut vctx = cx.add_empty_window();
-
-        vctx.update(|window, _cx| {
-            let element = div().into_any_element();
-            window.next_frame.deferred_draws.push(DeferredDraw {
-                current_view: window.current_view(),
-                parent_node: window
-                    .dispatch_tree
-                    .active_node_id()
-                    .unwrap_or(DispatchNodeId(0)),
-                element_id_stack: window.element_id_stack.clone(),
-                text_style_stack: window.text_style_stack.clone(),
-                priority: 0,
-                element: Some(element),
-                absolute_offset: Point::default(),
-                prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
-                paint_range: PaintIndex::default()..PaintIndex::default(),
-            });
-
-            let clear = window.draw(_cx);
-            assert!(window
-                .rendered_frame
-                .deferred_draws
-                .iter()
-                .all(|d| d.element.is_none()));
-            clear.clear();
-        });
     }
 }

@@ -485,12 +485,6 @@ impl Element for Img {
                 } else if let Some(replacement) = &mut layout_state.replacement {
                     replacement.paint(window, cx);
                 }
-                // Allocation from the element arena is transient; once we've
-                // painted the replacement we no longer need to keep it around.
-                // Dropping the reference here guarantees that the state doesn't
-                // hold an `AnyElement` when the arena is subsequently cleared,
-                // which would otherwise cause a panic later on.
-                layout_state.replacement = None;
             },
         )
     }
@@ -499,44 +493,6 @@ impl Element for Img {
 impl Styled for Img {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.interactivity.base_style
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::TestAppContext;
-    use crate::elements::div;
-    use crate::{Bounds, Point, Size};
-
-    #[gpui::test]
-    fn img_replacement_is_cleared_after_paint() {
-        let mut cx = TestAppContext::single();
-        let mut vctx = cx.add_empty_window();
-
-        vctx.update(|window, cx| {
-            let mut img = img("doesnotmatter");
-            // inject a dummy element directly into the layout state;
-            // paint() should drop it unconditionally.
-            let mut layout_state = ImgLayoutState {
-                frame_index: 0,
-                replacement: Some(div().into_any_element()),
-            };
-            let mut hitbox = None;
-
-            img.paint(
-                None,
-                None,
-                Bounds::new(Point::default(), Size::default()),
-                &mut layout_state,
-                &mut hitbox,
-                window,
-                cx,
-            );
-
-            assert!(layout_state.replacement.is_none(),
-                "replacement element should be dropped by paint");
-        });
     }
 }
 
