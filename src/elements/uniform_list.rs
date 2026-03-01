@@ -325,16 +325,6 @@ impl Element for UniformList {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Hitbox> {
-        // If this element is being reused (e.g. because its parent view was
-        // cached), the `frame_state` may contain `AnyElement`s from the
-        // previous frame. Those elements were allocated in the element arena
-        // which is cleared at the end of every draw; holding on to them across
-        // frames leads to panic when they are later dereferenced.  We avoid
-        // that by immediately dropping any leftovers before we push the
-        // current frame's items.
-        frame_state.items.clear();
-        frame_state.decorations.clear();
-
         let style = self
             .interactivity
             .compute_style(global_id, None, window, cx);
@@ -859,37 +849,5 @@ mod test {
                 assert_eq!(view.visible_range, ix..ix + 10);
             })
         }
-    }
-}
-
-// additional tests around caching and arena behaviour
-#[cfg(test)]
-mod arena_tests {
-    use super::*;
-    use crate::TestAppContext;
-    use crate::{div, StyleRefinement};
-
-    #[gpui::test]
-    fn uniform_list_caching_does_not_panic() {
-        let mut cx = TestAppContext::single();
-        let mut vctx = cx.add_empty_window();
-
-        let _root = cx.new(|cx| {
-            uniform_list("list", 100, |range, _w, _cx| {
-                range
-                    .map(|_| div().into_any_element())
-                    .collect::<SmallVec<[AnyElement; 64]>>()
-            })
-            .cached(StyleRefinement::default())
-        });
-
-        vctx.update(|window, _cx| {
-            let clear = window.draw(_cx);
-            clear.clear();
-        });
-        vctx.update(|window, _cx| {
-            let clear = window.draw(_cx);
-            clear.clear();
-        });
     }
 }
