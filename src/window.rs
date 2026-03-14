@@ -1020,6 +1020,7 @@ impl Window {
                 display_id,
                 window_min_size,
                 tabbing_identifier,
+                window_decorations,
             },
         )?;
 

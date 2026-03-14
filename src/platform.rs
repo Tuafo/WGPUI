@@ -1098,6 +1098,7 @@ pub(crate) struct WindowParams {
 
     pub window_min_size: Option<Size<Pixels>>,
     pub tabbing_identifier: Option<String>,
+    pub window_decorations: Option<WindowDecorations>,
 }
 
 /// Represents the status of how a window should be opened.
