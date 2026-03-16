@@ -102,12 +102,14 @@ fn main() {
             let fps_data: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
             let (fps_tx, fps_rx) = std::sync::mpsc::channel::<f64>();
 
-            // secondary render thread with Helio renderer
+            // secondary render thread with Helio renderer (spawn only once)
+            log::info!("Spawning Helio render thread...");
             let fps_shared = fps_data.clone();
             thread::Builder::new()
                 .name("helio_render".to_string())
                 .stack_size(16 * 1024 * 1024) // 16 MB stack for Helio renderer
                 .spawn(move || {
+                log::info!("Helio render thread started");
                 // Wait for surface to be ready
                 loop {
                     if surface_thread.back_buffer_view().is_some() {
@@ -116,8 +118,10 @@ fn main() {
                     thread::sleep(Duration::from_millis(10));
                 }
 
-                let device = surface_thread.device();
-                let queue = surface_thread.queue();
+                // Get device, queue, and surface info
+                // Clone them to owned Arc instances for Helio
+                let device_arc = Arc::new(surface_thread.device().clone());
+                let queue_arc = Arc::new(surface_thread.queue().clone());
                 let (width, height) = surface_thread.size();
                 let format = surface_thread.format();
 
@@ -136,8 +140,8 @@ fn main() {
 
                 // Create Helio renderer
                 let mut renderer = Renderer::new(
-                    Arc::new(device.clone()),
-                    Arc::new(queue.clone()),
+                    device_arc,
+                    queue_arc,
                     RendererConfig::new(width, height, format, feature_registry),
                 )
                 .expect("Failed to create Helio renderer");
@@ -293,9 +297,13 @@ fn main() {
                     // Render to back buffer
                     if let Err(e) = state.renderer.render(&camera, &view, dt) {
                         log::error!("Helio render error: {:?}", e);
+                        continue; // Skip this frame on error
                     }
 
-                    // Present
+                    // CRITICAL: Must drop the view BEFORE present to release the lock
+                    drop(view);
+
+                    // Present (swaps front/back buffers)
                     surface_thread.present();
                     state.frame_count = state.frame_count.wrapping_add(1);
 
