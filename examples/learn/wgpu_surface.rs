@@ -104,7 +104,10 @@ fn main() {
 
             // secondary render thread with Helio renderer
             let fps_shared = fps_data.clone();
-            thread::spawn(move || {
+            thread::Builder::new()
+                .name("helio_render".to_string())
+                .stack_size(16 * 1024 * 1024) // 16 MB stack for Helio renderer
+                .spawn(move || {
                 // Wait for surface to be ready
                 loop {
                     if surface_thread.back_buffer_view().is_some() {
@@ -305,7 +308,7 @@ fn main() {
                         last_report = now;
                     }
                 }
-            });
+            }).expect("Failed to spawn Helio render thread");
 
             // Construct entity and keep handle in outer scope
             let handle = cx.new(|_cx| SurfaceExample { surface, fps_rx, display_fps: 0.0 });
