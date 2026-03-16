@@ -42,7 +42,7 @@ struct SurfaceExample {
 }
 
 impl Render for SurfaceExample {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // pull any pending fps samples from channel
         while let Ok(f) = self.fps_rx.try_recv() {
             self.display_fps = f;
