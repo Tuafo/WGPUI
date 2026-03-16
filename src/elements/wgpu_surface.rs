@@ -124,10 +124,6 @@ impl WgpuSurfaceHandle {
     /// underlying queue is still coalesced to prevent flooding.
     pub fn present(&self) {
         self.swap_buffers();
-        if Self::benchmark_mode() {
-            // do nothing, let producer run unrestricted
-            return;
-        }
 
         // coalesce events by setting the pending flag; only send if there
         // was not one outstanding already.
