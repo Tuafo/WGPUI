@@ -31,6 +31,8 @@ struct HelioRenderState {
     cam_yaw: f32,
     cam_pitch: f32,
     frame_count: u32,
+    width: u32,
+    height: u32,
 }
 
 struct SurfaceExample {
@@ -204,6 +206,8 @@ fn main() {
                     cam_yaw: 0.0,
                     cam_pitch: -0.2,
                     frame_count: 0,
+                    width,
+                    height,
                 };
 
                 log::info!("Helio renderer initialized, starting render loop");
@@ -232,9 +236,11 @@ fn main() {
                     last_frame_time = now;
 
                     // Resize renderer if needed
-                    if state.renderer.width() != dw || state.renderer.height() != dh {
+                    if state.width != dw || state.height != dh {
                         log::info!("Resizing renderer to {}x{}", dw, dh);
                         state.renderer.resize(dw, dh);
+                        state.width = dw;
+                        state.height = dh;
                     }
 
                     // Update sun angle (slow rotation for demo)
