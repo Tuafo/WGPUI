@@ -96,10 +96,12 @@ core-video = "0.5.2"
 
 [dev-dependencies]
 backtrace = "0.3"
+helio-render-v2 = { path = "../Helio/crates/helio-render-v2" }
+glam = "0.29"
+env_logger = "0.11"
 collections = { package = "gpui_collections", version = "0.2.2", features = [
     "test-support",
 ] }
-env_logger = "0.11"
 http_client = { package = "gpui_http_client", version = "0.2.2", features = [
     "test-support",
 ] }
