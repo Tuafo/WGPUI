@@ -139,6 +139,24 @@ struct SurfaceExample {
     surface: WgpuSurfaceHandle,
     fps_rx: std::sync::mpsc::Receiver<f64>,
     display_fps: f64,
+    /// Join handle for the `helio_render` thread.  Stored so `Drop` can
+    /// signal shutdown and wait for the thread to release its `SurfaceTexture`
+    /// before the `WgpuSurfaceHandle` (and the underlying wgpu surface) drops.
+    render_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for SurfaceExample {
+    fn drop(&mut self) {
+        // Tell the render thread to stop (unblocks wait_for_present and makes
+        // back_view_with_size return None so the loop exits via `break`).
+        self.surface.shutdown();
+        // Wait for the thread to finish so it releases any live SurfaceTexture
+        // before the wgpu surface is destroyed, avoiding the Vulkan swapchain
+        // semaphore panic.
+        if let Some(handle) = self.render_thread.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 impl Render for SurfaceExample {
@@ -190,7 +208,7 @@ fn main() {
 
             log::info!("Spawning Helio render thread...");
             let fps_shared = fps_data.clone();
-            thread::Builder::new()
+            let render_thread = thread::Builder::new()
                 .name("helio_render".to_string())
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
@@ -274,10 +292,8 @@ fn main() {
 
                     let (view, (dw, dh)) = match surface_thread.back_view_with_size() {
                         Some(tuple) => tuple,
-                        None => {
-                            thread::sleep(Duration::from_millis(1));
-                            continue;
-                        }
+                        // `None` means the surface has been shut down — exit cleanly.
+                        None => break,
                     };
 
                     let now = std::time::Instant::now();
@@ -346,7 +362,7 @@ fn main() {
                 }
             }).expect("Failed to spawn Helio render thread");
 
-            let handle = cx.new(|_cx| SurfaceExample { surface, fps_rx, display_fps: 0.0 });
+            let handle = cx.new(|_cx| SurfaceExample { surface, fps_rx, display_fps: 0.0, render_thread: Some(render_thread) });
 
             let fps_shared = fps_data.clone();
             let tx_clone = fps_tx.clone();

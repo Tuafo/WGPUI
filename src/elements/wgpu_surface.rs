@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use refineable::Refineable as _;
 
@@ -22,6 +23,9 @@ struct WgpuSurfaceHandleInner {
     winit_window: Option<Arc<winit::window::Window>>,
     size: Mutex<(u32, u32)>,
     format: wgpu::TextureFormat,
+    /// Set to `true` by `shutdown()` to unblock `wait_for_present` and make
+    /// `back_view_with_size` return `None`, allowing the render thread to exit cleanly.
+    shutdown: AtomicBool,
 }
 
 impl Drop for WgpuSurfaceHandleInner {
@@ -74,6 +78,7 @@ impl WgpuSurfaceHandle {
                 winit_window,
                 size: Mutex::new((width, height)),
                 format,
+                shutdown: AtomicBool::new(false),
             }),
         }
     }
@@ -97,7 +102,12 @@ impl WgpuSurfaceHandle {
     /// Atomically obtain the back buffer view _and_ its pixel dimensions.
     /// This avoids races where the surface is resized between separate calls
     /// to `back_buffer_view` and `.size()`.
+    /// Returns `None` after `shutdown()` has been called so the render loop
+    /// can exit via `None => break`.
     pub fn back_view_with_size(&self) -> Option<(wgpu::TextureView, (u32, u32))> {
+        if self.inner.shutdown.load(Ordering::Relaxed) {
+            return None;
+        }
         self.inner
             .registry
             .lock_and_get_back_with_size(self.inner.surface_id)
@@ -152,12 +162,25 @@ impl WgpuSurfaceHandle {
             .is_present_pending(self.inner.surface_id)
     }
 
+    /// Signal the render thread to stop.  After this call, `wait_for_present`
+    /// returns immediately and `back_view_with_size` returns `None`, allowing
+    /// the render loop to exit cleanly via `None => break`.
+    pub fn shutdown(&self) {
+        self.inner.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns `true` after `shutdown()` has been called.
+    pub fn is_shutdown(&self) -> bool {
+        self.inner.shutdown.load(Ordering::Relaxed)
+    }
+
     /// Block until the pending flag clears, yielding the thread.
+    /// Returns immediately if `shutdown()` has been called.
     pub fn wait_for_present(&self) {
         if Self::benchmark_mode() {
             return;
         }
-        while self.is_present_pending() {
+        while self.is_present_pending() && !self.inner.shutdown.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_micros(50));
         }
     }
