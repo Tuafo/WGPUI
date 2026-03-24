@@ -32,7 +32,7 @@ doctest = false
 [dependencies]
 pollster = "0.4.0"
 winit = "0.30.12"
-wgpu = { git = "https://github.com/Far-Beyond-Pulsar/wgpu", rev = "fce5b80e8017304449124b12637ec324417e40c8", default-features = false, features = ["web", "webgpu", "wgsl"] }
+wgpu = { git = "https://github.com/Far-Beyond-Pulsar/wgpu", rev = "fce5b80e8017304449124b12637ec324417e40c8", default-features = false, features = ["web", "webgpu", "dx12", "vulkan", "wgsl"] }
 priority-threadpool = { git = "https://github.com/mdeand/priority-threadpool" }
 anyhow = "1.0.86"
 async-task = "4.7"
@@ -96,7 +96,7 @@ core-video = "0.5.2"
 
 [dev-dependencies]
 backtrace = "0.3"
-helio = { git="https://github.com/Far-Beyond-Pulsar/Helio" }
+helio = { git="https://github.com/Far-Beyond-Pulsar/Helio", rev="e56754037bf226f4f36e7e95e92548f2d14362f4" }
 glam = "0.29"
 env_logger = "0.11"
 collections = { package = "gpui_collections", version = "0.2.2", features = [
