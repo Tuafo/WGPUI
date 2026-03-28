@@ -1104,8 +1104,9 @@ impl Window {
                             .log_err();
                     })
                 } else if needs_present {
+                    // Fast path: framebuffer already updated by surface blit, just present it
                     handle
-                        .update(&mut cx, |_, window, _| window.present())
+                        .update(&mut cx, |_, window, _| window.present_framebuffer_only())
                         .log_err();
                 }
 
@@ -1394,8 +1395,9 @@ impl Window {
                             .log_err();
                     })
                 } else if needs_present {
+                    // Fast path: framebuffer already updated by surface blit, just present it
                     handle
-                        .update(&mut cx, |_, window, _| window.present())
+                        .update(&mut cx, |_, window, _| window.present_framebuffer_only())
                         .log_err();
                 }
 
@@ -2368,6 +2370,14 @@ impl Window {
     #[profiling::function]
     fn present(&self) {
         self.platform_window.draw(&self.rendered_frame.scene);
+        self.needs_present.set(false);
+        profiling::finish_frame!();
+    }
+
+    /// Present only the cached framebuffer (fast path - no compositor)
+    #[profiling::function]
+    fn present_framebuffer_only(&self) {
+        self.platform_window.present_framebuffer_only();
         self.needs_present.set(false);
         profiling::finish_frame!();
     }
