@@ -151,12 +151,9 @@ struct SurfaceExample {
 
 impl Drop for SurfaceExample {
     fn drop(&mut self) {
-        // Tell the render thread to stop (unblocks wait_for_present and makes
-        // back_view_with_size return None so the loop exits via `break`).
-        self.surface.shutdown();
-        // Wait for the thread to finish so it releases any live SurfaceTexture
-        // before the wgpu surface is destroyed, avoiding the Vulkan swapchain
-        // semaphore panic.
+        // When `self.surface` is dropped, it's automatically removed from the registry,
+        // causing `back_view_with_size()` to return None and the render loop to exit cleanly.
+        // We just need to wait for the thread to finish.
         if let Some(handle) = self.render_thread.take() {
             let _ = handle.join();
         }
