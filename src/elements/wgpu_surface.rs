@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use refineable::Refineable as _;
 
@@ -23,9 +22,6 @@ struct WgpuSurfaceHandleInner {
     winit_window: Option<Arc<winit::window::Window>>,
     size: Mutex<(u32, u32)>,
     format: wgpu::TextureFormat,
-    /// Set to `true` by `shutdown()` to unblock `wait_for_present` and make
-    /// `back_view_with_size` return `None`, allowing the render thread to exit cleanly.
-    shutdown: AtomicBool,
 }
 
 impl Drop for WgpuSurfaceHandleInner {
@@ -34,14 +30,19 @@ impl Drop for WgpuSurfaceHandleInner {
     }
 }
 
-/// A handle to a double-buffered WGPU surface.
+/// A handle to a triple-buffered WGPU surface that perfectly emulates a Winit window.
 ///
-/// External code uses this to render into the surface's back buffer using the
-/// provided `wgpu::Device` and `wgpu::Queue`, then calls [`present()`](Self::present)
-/// to swap buffers and trigger a window re-composite.
+/// External render threads use this to render continuously at their own pace:
+/// 1. Get the back buffer with [`back_buffer_view()`](Self::back_buffer_view)
+/// 2. Render to it
+/// 3. Call [`present()`](Self::present) to swap buffers (non-blocking)
+/// 4. Repeat immediately - no waiting required
 ///
-/// All rendering stays on the GPU — `swap_buffers()` is a pointer swap (no copy),
-/// and the renderer samples the front buffer texture directly in the shader.
+/// The GPUI compositor runs independently, sampling the latest frame whenever it renders.
+/// Frame drops and repeats are handled gracefully.
+///
+/// All rendering stays on the GPU — buffer swaps are atomic pointer swaps (no copy),
+/// and the renderer samples textures directly in the shader.
 ///
 /// This handle is `Clone + Send + Sync`.
 #[derive(Clone)]
@@ -50,13 +51,6 @@ pub struct WgpuSurfaceHandle {
 }
 
 impl WgpuSurfaceHandle {
-    /// Returns true when the GPUI_BENCHMARK environment variable is set.
-    /// In benchmark mode gpui bypasses the compositor entirely and
-    /// operations like `present()` become no-ops so the render thread can
-    /// drive the GPU at full speed.
-    fn benchmark_mode() -> bool {
-        std::env::var("GPUI_BENCHMARK").is_ok()
-    }
     pub(crate) fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -78,7 +72,6 @@ impl WgpuSurfaceHandle {
                 winit_window,
                 size: Mutex::new((width, height)),
                 format,
-                shutdown: AtomicBool::new(false),
             }),
         }
     }
@@ -101,110 +94,45 @@ impl WgpuSurfaceHandle {
 
     /// Atomically obtain the back buffer view _and_ its pixel dimensions.
     /// This avoids races where the surface is resized between separate calls
-    /// to `back_buffer_view` and `.size()`.
-    /// Returns `None` after `shutdown()` has been called so the render loop
-    /// can exit via `None => break`.
+    /// to `back_buffer_view()` and `.size()`.
     pub fn back_view_with_size(&self) -> Option<(wgpu::TextureView, (u32, u32))> {
-        if self.inner.shutdown.load(Ordering::Relaxed) {
-            return None;
-        }
         self.inner
             .registry
             .lock_and_get_back_with_size(self.inner.surface_id)
     }
 
-    /// Swap front and back buffers (GPU pointer swap, zero copy).
-    /// After this, the content you rendered into the back buffer becomes the
-    /// front buffer that the renderer will composite.
-    pub fn swap_buffers(&self) {
-        self.inner.registry.swap_buffers(self.inner.surface_id);
-    }
-
-    /// Request the window to re-present its scene without a full layout/paint.
-    /// The renderer will pick up the current front buffer texture.
-    pub fn request_present(&self) {
-        (self.inner.present_trigger)();
-    }
-
-    /// Convenience: swap buffers and immediately request a present.
+    /// Present the rendered frame to the compositor (non-blocking, Winit-style).
     ///
-    /// If the handle was created with a `CrossWindow` (default on WGPU
-    /// platforms), this method will call `window.request_redraw()` directly
-    /// from the render thread, sidestepping the `CrossEvent` event bus.  The
-    /// underlying queue is still coalesced to prevent flooding.
+    /// This atomically swaps the rendering and ready buffers, making your newly
+    /// rendered frame available to the compositor, and triggers a window redraw request.
+    ///
+    /// **Returns immediately** - external threads can continue rendering the next
+    /// frame without waiting for the compositor. This is the key difference from
+    /// traditional blocking present models.
+    ///
+    /// The compositor will pick up the frame the next time it renders. If the
+    /// external thread is faster than the compositor, some frames may be dropped.
+    /// If the compositor is faster, the same frame may be displayed multiple times.
+    /// This is identical to how native Winit windows behave.
     pub fn present(&self) {
-        log::trace!("[surface_id={:?}] present: entering", self.inner.surface_id);
-        self.swap_buffers();
-
-        // coalesce events by setting the pending flag; only send if there
-        // was not one outstanding already.
-        let was_already_pending = self
-            .inner
+        // Atomically swap rendering ↔ ready buffers (lock-free operation)
+        self.inner
             .registry
-            .set_present_pending(self.inner.surface_id);
+            .swap_rendering_ready(self.inner.surface_id);
 
-        log::debug!(
-            "[surface_id={:?}] present: set_present_pending (was_already_pending={})",
-            self.inner.surface_id,
-            was_already_pending
-        );
-
-        if !was_already_pending {
-            if let Some(winit) = &self.inner.winit_window {
-                log::debug!("[surface_id={:?}] present: calling winit.request_redraw()", self.inner.surface_id);
-                winit.request_redraw();
-            } else {
-                log::debug!("[surface_id={:?}] present: calling request_present() fallback", self.inner.surface_id);
-                self.request_present();
-            }
+        // Trigger compositor to render soon (Winit coalesces these requests)
+        if let Some(winit) = &self.inner.winit_window {
+            winit.request_redraw();
         } else {
-            log::debug!("[surface_id={:?}] present: skipping redraw request (already pending)", self.inner.surface_id);
+            (self.inner.present_trigger)();
         }
+
+        // Return immediately - no blocking
     }
 
     /// Current size in device pixels.
     pub fn size(&self) -> (u32, u32) {
         *self.inner.size.lock().unwrap()
-    }
-
-    /// Returns `true` while the compositor still has an unconsumed frame.
-    pub fn is_present_pending(&self) -> bool {
-        self.inner
-            .registry
-            .is_present_pending(self.inner.surface_id)
-    }
-
-    /// Signal the render thread to stop.  After this call, `wait_for_present`
-    /// returns immediately and `back_view_with_size` returns `None`, allowing
-    /// the render loop to exit cleanly via `None => break`.
-    pub fn shutdown(&self) {
-        self.inner.shutdown.store(true, Ordering::Relaxed);
-    }
-
-    /// Returns `true` after `shutdown()` has been called.
-    pub fn is_shutdown(&self) -> bool {
-        self.inner.shutdown.load(Ordering::Relaxed)
-    }
-
-    /// Block until the pending flag clears, yielding the thread.
-    /// Returns immediately if `shutdown()` has been called.
-    pub fn wait_for_present(&self) {
-        if Self::benchmark_mode() {
-            return;
-        }
-        log::trace!("[surface_id={:?}] wait_for_present: entering", self.inner.surface_id);
-        let mut iter_count = 0;
-        while self.is_present_pending() && !self.inner.shutdown.load(Ordering::Relaxed) {
-            if iter_count == 0 {
-                log::debug!("[surface_id={:?}] wait_for_present: blocking (present still pending)", self.inner.surface_id);
-            }
-            iter_count += 1;
-            std::thread::sleep(std::time::Duration::from_micros(50));
-        }
-        if iter_count > 0 {
-            log::debug!("[surface_id={:?}] wait_for_present: unblocked after {} iterations", self.inner.surface_id, iter_count);
-        }
-        log::trace!("[surface_id={:?}] wait_for_present: exiting", self.inner.surface_id);
     }
 
     /// The texture format used by this surface's buffers.
@@ -217,7 +145,7 @@ impl WgpuSurfaceHandle {
         self.inner.surface_id
     }
 
-    /// Resize the surface's double buffers. Called by the element when bounds change.
+    /// Resize the surface's triple buffers. Called by the element when bounds change.
     pub(crate) fn resize(&self, width: u32, height: u32) {
         let mut size = self.inner.size.lock().unwrap();
         if size.0 == width && size.1 == height {
@@ -241,7 +169,10 @@ pub fn wgpu_surface(handle: WgpuSurfaceHandle) -> WgpuSurface {
 
 /// An element that displays content rendered externally via WGPU.
 ///
-/// On the WGPU platform, the renderer composites the surface's front buffer
+/// Acts as a drop-in replacement for a Winit window - external render threads
+/// can render continuously at their own pace while GPUI composites around them.
+///
+/// On the WGPU platform, the renderer composites the surface's display buffer
 /// texture directly (GPU → GPU, no copies). On other platforms this renders
 /// as a fallback colored box.
 pub struct WgpuSurface {

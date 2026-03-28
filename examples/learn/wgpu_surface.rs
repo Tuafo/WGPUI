@@ -325,19 +325,16 @@ fn main() {
                 let mut last_frame_time = std::time::Instant::now();
 
                 loop {
-                    log::debug!("Helio render loop: waiting for present...");
-                    surface_thread.wait_for_present();
-                    log::debug!("Helio render loop: wait_for_present returned, getting back buffer");
-
+                    // Non-blocking Winit-style render loop: Get back buffer and render immediately
                     let (view, (dw, dh)) = match surface_thread.back_view_with_size() {
                         Some(tuple) => tuple,
-                        // `None` means the surface has been shut down — exit cleanly.
+                        // `None` means the surface has been dropped — exit cleanly
                         None => {
-                            log::info!("Helio render loop: back_view_with_size returned None, exiting");
+                            log::info!("Helio render loop: surface dropped, exiting");
                             break;
                         }
                     };
-                    log::trace!("Helio render loop: got back buffer {}x{}", dw, dh);
+                    log::trace!("Helio render loop: rendering frame {}x{}", dw, dh);
 
                     let now = std::time::Instant::now();
                     let dt  = (now - last_frame_time).as_secs_f32();
@@ -434,16 +431,11 @@ fn main() {
                     // Must drop view BEFORE present to release the texture lock
                     drop(view);
 
-                    log::debug!("Helio render loop: calling present()");
+                    // Present the frame (non-blocking, Winit-style)
                     surface_thread.present();
-                    log::debug!("Helio render loop: present() returned, waiting for compositor...");
 
-                    // CRITICAL: Wait for the compositor to consume this frame before rendering the next one.
-                    // Without this, we'd immediately loop back and overwrite the back buffer before
-                    // the compositor reads the front buffer, resulting in a frozen display.
-                    surface_thread.wait_for_present();
-                    log::debug!("Helio render loop: wait complete, looping to next frame");
-
+                    // Immediately loop to render next frame - no blocking!
+                    // The triple-buffer system handles synchronization automatically.
                     frame_count = frame_count.wrapping_add(1);
                     if now.duration_since(last_report) >= Duration::from_secs(1) {
                         *fps_shared.lock().unwrap() = frame_count as f64;
