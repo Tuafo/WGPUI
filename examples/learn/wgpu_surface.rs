@@ -161,11 +161,13 @@ impl Drop for SurfaceExample {
 
 impl Render for SurfaceExample {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        log::trace!("SurfaceExample::render called");
         // pull any pending fps samples from channel
         while let Ok(f) = self.fps_rx.try_recv() {
             self.display_fps = f;
         }
         // ensure we keep repainting (needed since updates arrive off-thread)
+        log::trace!("SurfaceExample::render: requesting animation frame");
         window.request_animation_frame();
 
         // The surface element will display the front buffer
@@ -288,13 +290,19 @@ fn main() {
                 let mut last_frame_time = std::time::Instant::now();
 
                 loop {
+                    log::debug!("Helio render loop: waiting for present...");
                     surface_thread.wait_for_present();
+                    log::debug!("Helio render loop: wait_for_present returned, getting back buffer");
 
                     let (view, (dw, dh)) = match surface_thread.back_view_with_size() {
                         Some(tuple) => tuple,
                         // `None` means the surface has been shut down — exit cleanly.
-                        None => break,
+                        None => {
+                            log::info!("Helio render loop: back_view_with_size returned None, exiting");
+                            break;
+                        }
                     };
+                    log::trace!("Helio render loop: got back buffer {}x{}", dw, dh);
 
                     let now = std::time::Instant::now();
                     let dt  = (now - last_frame_time).as_secs_f32();
@@ -343,15 +351,19 @@ fn main() {
                         directional_light(light_dir, sun_color, (sun_lux * 0.35).max(0.01)),
                     );
 
+                    log::trace!("Helio render loop: rendering frame");
                     if let Err(e) = state.renderer.render(&camera, &view) {
                         log::error!("Helio render error: {:?}", e);
                         continue;
                     }
+                    log::trace!("Helio render loop: render complete");
 
                     // Must drop view BEFORE present to release the texture lock
                     drop(view);
 
+                    log::debug!("Helio render loop: calling present()");
                     surface_thread.present();
+                    log::debug!("Helio render loop: present() returned, looping...");
 
                     frame_count = frame_count.wrapping_add(1);
                     if now.duration_since(last_report) >= Duration::from_secs(1) {

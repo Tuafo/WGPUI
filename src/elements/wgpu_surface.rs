@@ -133,20 +133,32 @@ impl WgpuSurfaceHandle {
     /// from the render thread, sidestepping the `CrossEvent` event bus.  The
     /// underlying queue is still coalesced to prevent flooding.
     pub fn present(&self) {
+        log::trace!("[surface_id={:?}] present: entering", self.inner.surface_id);
         self.swap_buffers();
 
         // coalesce events by setting the pending flag; only send if there
         // was not one outstanding already.
-        if !self
+        let was_already_pending = self
             .inner
             .registry
-            .set_present_pending(self.inner.surface_id)
-        {
+            .set_present_pending(self.inner.surface_id);
+
+        log::debug!(
+            "[surface_id={:?}] present: set_present_pending (was_already_pending={})",
+            self.inner.surface_id,
+            was_already_pending
+        );
+
+        if !was_already_pending {
             if let Some(winit) = &self.inner.winit_window {
+                log::debug!("[surface_id={:?}] present: calling winit.request_redraw()", self.inner.surface_id);
                 winit.request_redraw();
             } else {
+                log::debug!("[surface_id={:?}] present: calling request_present() fallback", self.inner.surface_id);
                 self.request_present();
             }
+        } else {
+            log::debug!("[surface_id={:?}] present: skipping redraw request (already pending)", self.inner.surface_id);
         }
     }
 
@@ -180,9 +192,19 @@ impl WgpuSurfaceHandle {
         if Self::benchmark_mode() {
             return;
         }
+        log::trace!("[surface_id={:?}] wait_for_present: entering", self.inner.surface_id);
+        let mut iter_count = 0;
         while self.is_present_pending() && !self.inner.shutdown.load(Ordering::Relaxed) {
+            if iter_count == 0 {
+                log::debug!("[surface_id={:?}] wait_for_present: blocking (present still pending)", self.inner.surface_id);
+            }
+            iter_count += 1;
             std::thread::sleep(std::time::Duration::from_micros(50));
         }
+        if iter_count > 0 {
+            log::debug!("[surface_id={:?}] wait_for_present: unblocked after {} iterations", self.inner.surface_id, iter_count);
+        }
+        log::trace!("[surface_id={:?}] wait_for_present: exiting", self.inner.surface_id);
     }
 
     /// The texture format used by this surface's buffers.
