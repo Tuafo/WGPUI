@@ -120,11 +120,15 @@ impl WgpuSurfaceHandle {
             .registry
             .swap_rendering_ready(self.inner.surface_id);
 
-        // Trigger compositor to render soon (Winit coalesces these requests)
-        if let Some(winit) = &self.inner.winit_window {
-            winit.request_redraw();
-        } else {
-            (self.inner.present_trigger)();
+        // Coalesce redraw requests: only trigger if one isn't already pending
+        // This prevents flooding the compositor with thousands of requests per second
+        let was_pending = self.inner.registry.set_redraw_pending(self.inner.surface_id);
+        if !was_pending {
+            if let Some(winit) = &self.inner.winit_window {
+                winit.request_redraw();
+            } else {
+                (self.inner.present_trigger)();
+            }
         }
 
         // Return immediately - no blocking
