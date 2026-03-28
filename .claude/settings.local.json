@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cargo build:*)",
       "Bash(cargo run:*)",
-      "Bash(set:*)"
+      "Bash(set:*)",
+      "Bash(Select-String -Pattern \"Helio render loop|animation_time|Renderer::draw\")",
+      "Bash(Select-Object -First 30)"
     ]
   }
 }

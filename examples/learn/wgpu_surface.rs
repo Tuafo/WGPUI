@@ -353,6 +353,8 @@ fn main() {
                     state.sun_angle += 0.1 * dt;
                     state.animation_time += dt;
 
+                    log::debug!("Helio render loop: dt={:.4}s, animation_time={:.2}s", dt, state.animation_time);
+
                     // Animate the cubes with rotation and orbital motion
                     let t = state.animation_time;
 
@@ -383,6 +385,10 @@ fn main() {
                     let _ = state.renderer.update_object_transform(state.cube1_obj, cube1_transform);
                     let _ = state.renderer.update_object_transform(state.cube2_obj, cube2_transform);
                     let _ = state.renderer.update_object_transform(state.cube3_obj, cube3_transform);
+
+                    log::trace!("Helio render loop: updated transforms - cube1 y={:.2}, cube2 pos=({:.2},{:.2},{:.2})",
+                        0.5 + (t * 0.5).sin() * 0.15,
+                        (t * 0.6).cos() * 2.5, 0.4, (t * 0.6).sin() * 2.5);
 
                     let (sy, cy) = state.cam_yaw.sin_cos();
                     let (sp, cp) = state.cam_pitch.sin_cos();
@@ -430,7 +436,13 @@ fn main() {
 
                     log::debug!("Helio render loop: calling present()");
                     surface_thread.present();
-                    log::debug!("Helio render loop: present() returned, looping...");
+                    log::debug!("Helio render loop: present() returned, waiting for compositor...");
+
+                    // CRITICAL: Wait for the compositor to consume this frame before rendering the next one.
+                    // Without this, we'd immediately loop back and overwrite the back buffer before
+                    // the compositor reads the front buffer, resulting in a frozen display.
+                    surface_thread.wait_for_present();
+                    log::debug!("Helio render loop: wait complete, looping to next frame");
 
                     frame_count = frame_count.wrapping_add(1);
                     if now.duration_since(last_report) >= Duration::from_secs(1) {
