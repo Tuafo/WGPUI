@@ -123,11 +123,15 @@ struct HelioRenderState {
     cube1: MeshId,
     cube2: MeshId,
     cube3: MeshId,
+    cube1_obj: helio::ObjectId,
+    cube2_obj: helio::ObjectId,
+    cube3_obj: helio::ObjectId,
     ground: MeshId,
     roof: MeshId,
     mat: MaterialId,
     sun_light_id: LightId,
     sun_angle: f32,
+    animation_time: f32,
     cam_pos: glam::Vec3,
     cam_yaw: f32,
     cam_pitch: f32,
@@ -241,21 +245,49 @@ fn main() {
                 let ground = renderer.insert_mesh(plane_mesh([0.0, 0.0, 0.0], 20.0));
                 let roof   = renderer.insert_mesh(box_mesh([0.0, 2.85, 0.0], [4.5, 0.15, 4.5]));
 
-                let insert = |r: &mut Renderer, mesh: MeshId, radius: f32| {
-                    let _ = r.insert_object(ObjectDescriptor {
-                        mesh,
-                        material: mat,
-                        transform: glam::Mat4::IDENTITY,
-                        bounds: [0.0, 0.0, 0.0, radius],
-                        flags: 0,
-                        groups: helio::GroupMask::NONE,
-                    });
-                };
-                insert(&mut renderer, cube1,   0.5);
-                insert(&mut renderer, cube2,   0.4);
-                insert(&mut renderer, cube3,   0.3);
-                insert(&mut renderer, ground, 20.0);
-                insert(&mut renderer, roof,    4.5);
+                // Insert animated cubes and capture their ObjectIds
+                let cube1_obj = renderer.insert_object(ObjectDescriptor {
+                    mesh: cube1,
+                    material: mat,
+                    transform: glam::Mat4::IDENTITY,
+                    bounds: [0.0, 0.0, 0.0, 0.5],
+                    flags: 0,
+                    groups: helio::GroupMask::NONE,
+                }).expect("Failed to insert cube1");
+                let cube2_obj = renderer.insert_object(ObjectDescriptor {
+                    mesh: cube2,
+                    material: mat,
+                    transform: glam::Mat4::IDENTITY,
+                    bounds: [0.0, 0.0, 0.0, 0.4],
+                    flags: 0,
+                    groups: helio::GroupMask::NONE,
+                }).expect("Failed to insert cube2");
+                let cube3_obj = renderer.insert_object(ObjectDescriptor {
+                    mesh: cube3,
+                    material: mat,
+                    transform: glam::Mat4::IDENTITY,
+                    bounds: [0.0, 0.0, 0.0, 0.3],
+                    flags: 0,
+                    groups: helio::GroupMask::NONE,
+                }).expect("Failed to insert cube3");
+
+                // Insert static objects
+                let _ = renderer.insert_object(ObjectDescriptor {
+                    mesh: ground,
+                    material: mat,
+                    transform: glam::Mat4::IDENTITY,
+                    bounds: [0.0, 0.0, 0.0, 20.0],
+                    flags: 0,
+                    groups: helio::GroupMask::NONE,
+                });
+                let _ = renderer.insert_object(ObjectDescriptor {
+                    mesh: roof,
+                    material: mat,
+                    transform: glam::Mat4::IDENTITY,
+                    bounds: [0.0, 0.0, 0.0, 4.5],
+                    flags: 0,
+                    groups: helio::GroupMask::NONE,
+                });
 
                 let init_sun_angle = 1.0f32;
                 let init_sun_dir = glam::Vec3::new(init_sun_angle.cos() * 0.3, init_sun_angle.sin(), 0.5).normalize();
@@ -272,10 +304,13 @@ fn main() {
 
                 let mut state = HelioRenderState {
                     renderer,
-                    cube1, cube2, cube3, ground, roof,
+                    cube1, cube2, cube3,
+                    cube1_obj, cube2_obj, cube3_obj,
+                    ground, roof,
                     mat,
                     sun_light_id,
                     sun_angle: init_sun_angle,
+                    animation_time: 0.0,
                     cam_pos: glam::Vec3::new(0.0, 2.5, 7.0),
                     cam_yaw: 0.0,
                     cam_pitch: -0.2,
@@ -316,6 +351,38 @@ fn main() {
                     }
 
                     state.sun_angle += 0.1 * dt;
+                    state.animation_time += dt;
+
+                    // Animate the cubes with rotation and orbital motion
+                    let t = state.animation_time;
+
+                    // Cube 1: Rotate in place with a gentle bob
+                    let cube1_transform = glam::Mat4::from_translation(glam::Vec3::new(
+                        0.0,
+                        0.5 + (t * 0.5).sin() * 0.15,  // Bob up and down
+                        0.0
+                    )) * glam::Mat4::from_rotation_y(t * 0.8);  // Rotate
+
+                    // Cube 2: Orbit around center
+                    let orbit_radius = 2.5;
+                    let orbit_speed = 0.6;
+                    let cube2_transform = glam::Mat4::from_translation(glam::Vec3::new(
+                        (t * orbit_speed).cos() * orbit_radius,
+                        0.4,
+                        (t * orbit_speed).sin() * orbit_radius
+                    )) * glam::Mat4::from_rotation_y(t * 1.5) * glam::Mat4::from_rotation_x(t * 0.5);
+
+                    // Cube 3: Figure-8 pattern
+                    let cube3_transform = glam::Mat4::from_translation(glam::Vec3::new(
+                        (t * 0.4).sin() * 2.0,
+                        0.3 + ((t * 0.8).sin() * 0.5).abs(),
+                        (t * 0.8).sin() * 1.5
+                    )) * glam::Mat4::from_rotation_z(t * 1.2);
+
+                    // Update object transforms
+                    let _ = state.renderer.update_object_transform(state.cube1_obj, cube1_transform);
+                    let _ = state.renderer.update_object_transform(state.cube2_obj, cube2_transform);
+                    let _ = state.renderer.update_object_transform(state.cube3_obj, cube3_transform);
 
                     let (sy, cy) = state.cam_yaw.sin_cos();
                     let (sp, cp) = state.cam_pitch.sin_cos();
