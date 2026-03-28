@@ -324,6 +324,12 @@ impl Element for WgpuSurface {
         style.paint(bounds, window, cx, |window, _cx| {
             window.paint_wgpu_surface(bounds, self.handle.id());
         });
+
+        // AAA engine pattern: Request continuous rendering to keep the compositor
+        // running every frame. This is critical for external render threads that
+        // update the WGPU surface - without this, the compositor only renders when
+        // the UI changes, causing the surface to appear frozen.
+        window.request_animation_frame();
     }
 }
 
