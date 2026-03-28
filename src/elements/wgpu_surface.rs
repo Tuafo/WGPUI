@@ -120,15 +120,17 @@ impl WgpuSurfaceHandle {
             .registry
             .swap_rendering_ready(self.inner.surface_id);
 
-        // Coalesce redraw requests: only trigger if one isn't already pending
-        // This prevents flooding the compositor with thousands of requests per second
-        let was_pending = self.inner.registry.set_redraw_pending(self.inner.surface_id);
-        if !was_pending {
-            if let Some(winit) = &self.inner.winit_window {
-                winit.request_redraw();
-            } else {
-                (self.inner.present_trigger)();
-            }
+        // Track that this surface has new content to be composited.
+        // There may already be a pending redraw, but we still request an OS redraw
+        // to survive dropped/lost redraw events (so we don't stall at frame 1).
+        self.inner
+            .registry
+            .set_redraw_pending(self.inner.surface_id);
+
+        if let Some(winit) = &self.inner.winit_window {
+            winit.request_redraw();
+        } else {
+            (self.inner.present_trigger)();
         }
 
         // Return immediately - no blocking
