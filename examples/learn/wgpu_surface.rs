@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use helio::{
     Camera, GpuLight, GpuMaterial, LightId, LightType, MaterialId, MeshId,
-    MeshUpload, ObjectDescriptor, PackedVertex, Renderer, RendererConfig,
+    MeshUpload, ObjectDescriptor, ObjectId, PackedVertex, Renderer, RendererConfig,
+    SceneActor,
 };
 
 // ── Mesh helpers ────────────────────────────────────────────────────────────
@@ -78,10 +79,10 @@ fn plane_mesh(center: [f32; 3], half_extent: f32) -> MeshUpload {
     MeshUpload { vertices, indices: vec![0, 1, 2, 0, 2, 3] }
 }
 
-fn make_material(base_color: [f32; 4], roughness: f32, metallic: f32) -> GpuMaterial {
+fn make_material(base_color: [f32; 4], roughness: f32, metallic: f32, emissive: [f32; 3], emissive_strength: f32) -> GpuMaterial {
     GpuMaterial {
         base_color,
-        emissive: [0.0, 0.0, 0.0, 0.0],
+        emissive: [emissive[0], emissive[1], emissive[2], emissive_strength],
         roughness_metallic: [roughness, metallic, 1.5, 0.5],
         tex_base_color: GpuMaterial::NO_TEXTURE,
         tex_normal:     GpuMaterial::NO_TEXTURE,
@@ -94,12 +95,38 @@ fn make_material(base_color: [f32; 4], roughness: f32, metallic: f32) -> GpuMate
     }
 }
 
+fn insert_object(
+    renderer: &mut Renderer,
+    mesh: MeshId,
+    material: MaterialId,
+    transform: glam::Mat4,
+    radius: f32,
+) -> Result<ObjectId, helio::SceneError> {
+    renderer.scene_mut()
+        .insert_actor(SceneActor::object(ObjectDescriptor {
+            mesh,
+            material,
+            transform,
+            bounds: [
+                transform.w_axis.x,
+                transform.w_axis.y,
+                transform.w_axis.z,
+                radius,
+            ],
+            flags: 0,
+            groups: helio::GroupMask::NONE,
+            movability: None,
+        }))
+        .as_object()
+        .ok_or(helio::SceneError::InvalidHandle { resource: "object" })
+}
+
 fn directional_light(direction: [f32; 3], color: [f32; 3], intensity: f32) -> GpuLight {
     GpuLight {
         position_range:  [0.0, 0.0, 0.0, f32::MAX],
         direction_outer: [direction[0], direction[1], direction[2], 0.0],
         color_intensity: [color[0], color[1], color[2], intensity],
-        shadow_index: 0,
+        shadow_index: 0, // Enable shadows
         light_type: LightType::Directional as u32,
         inner_angle: 0.0,
         _pad: 0,
@@ -111,7 +138,7 @@ fn point_light(position: [f32; 3], color: [f32; 3], intensity: f32, range: f32) 
         position_range:  [position[0], position[1], position[2], range],
         direction_outer: [0.0, 0.0, -1.0, 0.0],
         color_intensity: [color[0], color[1], color[2], intensity],
-        shadow_index: 0,
+        shadow_index: 0, // Enable shadows
         light_type: LightType::Point as u32,
         inner_angle: 0.0,
         _pad: 0,
@@ -120,15 +147,9 @@ fn point_light(position: [f32; 3], color: [f32; 3], intensity: f32, range: f32) 
 
 struct HelioRenderState {
     renderer: Renderer,
-    cube1: MeshId,
-    cube2: MeshId,
-    cube3: MeshId,
-    cube1_obj: helio::ObjectId,
-    cube2_obj: helio::ObjectId,
-    cube3_obj: helio::ObjectId,
-    ground: MeshId,
-    roof: MeshId,
-    mat: MaterialId,
+    cube1_obj: ObjectId,
+    cube2_obj: ObjectId,
+    cube3_obj: ObjectId,
     sun_light_id: LightId,
     sun_angle: f32,
     animation_time: f32,
@@ -179,7 +200,7 @@ impl Render for SurfaceExample {
             .border_4()
             .border_color(rgb(0x00aaff))
             .rounded_lg()
-            .shadow_xl()
+            .shadow_xl() 
             .bg(rgb(0x000000))
             .m(gpui::px(8.0))
             .child(
@@ -234,77 +255,71 @@ fn main() {
                     RendererConfig::new(width, height, format),
                 );
 
-                let mat = renderer.insert_material(make_material([0.7, 0.7, 0.72, 1.0], 0.7, 0.0));
+                // Create material
+                let mat = renderer.scene_mut().insert_material(
+                    make_material([0.7, 0.7, 0.72, 1.0], 0.7, 0.0, [0.0, 0.0, 0.0], 0.0)
+                );
 
-                let cube1  = renderer.insert_mesh(cube_mesh([ 0.0, 0.5,  0.0], 0.5));
-                let cube2  = renderer.insert_mesh(cube_mesh([-2.0, 0.4, -1.0], 0.4));
-                let cube3  = renderer.insert_mesh(cube_mesh([ 2.0, 0.3,  0.5], 0.3));
-                let ground = renderer.insert_mesh(plane_mesh([0.0, 0.0, 0.0], 20.0));
-                let roof   = renderer.insert_mesh(box_mesh([0.0, 2.85, 0.0], [4.5, 0.15, 4.5]));
+                // Add sky actor for outdoor environment
+                renderer.scene_mut().insert_actor(SceneActor::Sky(
+                    helio::SkyActor::new().with_clouds(helio::VolumetricClouds {
+                        coverage: 0.5,
+                        density: 0.6,
+                        base: 1000.0,
+                        top: 2000.0,
+                        wind_x: 1.0,
+                        wind_z: 0.5,
+                        speed: 1.0,
+                        skylight_intensity: 0.3,
+                    })
+                ));
+
+                // Insert meshes using SceneActor API
+                let cube1  = renderer.scene_mut().insert_actor(SceneActor::mesh(cube_mesh([0.0, 0.0, 0.0], 0.5))).as_mesh().unwrap();
+                let cube2  = renderer.scene_mut().insert_actor(SceneActor::mesh(cube_mesh([0.0, 0.0, 0.0], 0.4))).as_mesh().unwrap();
+                let cube3  = renderer.scene_mut().insert_actor(SceneActor::mesh(cube_mesh([0.0, 0.0, 0.0], 0.3))).as_mesh().unwrap();
+                let ground = renderer.scene_mut().insert_actor(SceneActor::mesh(plane_mesh([0.0, 0.0, 0.0], 20.0))).as_mesh().unwrap();
+                let roof   = renderer.scene_mut().insert_actor(SceneActor::mesh(box_mesh([0.0, 0.0, 0.0], [4.5, 0.15, 4.5]))).as_mesh().unwrap();
 
                 // Insert animated cubes and capture their ObjectIds
-                let cube1_obj = renderer.insert_object(ObjectDescriptor {
-                    mesh: cube1,
-                    material: mat,
-                    transform: glam::Mat4::IDENTITY,
-                    bounds: [0.0, 0.0, 0.0, 0.5],
-                    flags: 0,
-                    groups: helio::GroupMask::NONE,
-                }).expect("Failed to insert cube1");
-                let cube2_obj = renderer.insert_object(ObjectDescriptor {
-                    mesh: cube2,
-                    material: mat,
-                    transform: glam::Mat4::IDENTITY,
-                    bounds: [0.0, 0.0, 0.0, 0.4],
-                    flags: 0,
-                    groups: helio::GroupMask::NONE,
-                }).expect("Failed to insert cube2");
-                let cube3_obj = renderer.insert_object(ObjectDescriptor {
-                    mesh: cube3,
-                    material: mat,
-                    transform: glam::Mat4::IDENTITY,
-                    bounds: [0.0, 0.0, 0.0, 0.3],
-                    flags: 0,
-                    groups: helio::GroupMask::NONE,
-                }).expect("Failed to insert cube3");
+                let cube1_obj = insert_object(&mut renderer, cube1, mat, glam::Mat4::IDENTITY, 0.5)
+                    .expect("Failed to insert cube1");
+                let cube2_obj = insert_object(&mut renderer, cube2, mat, glam::Mat4::IDENTITY, 0.4)
+                    .expect("Failed to insert cube2");
+                let cube3_obj = insert_object(&mut renderer, cube3, mat, glam::Mat4::IDENTITY, 0.3)
+                    .expect("Failed to insert cube3");
 
                 // Insert static objects
-                let _ = renderer.insert_object(ObjectDescriptor {
-                    mesh: ground,
-                    material: mat,
-                    transform: glam::Mat4::IDENTITY,
-                    bounds: [0.0, 0.0, 0.0, 20.0],
-                    flags: 0,
-                    groups: helio::GroupMask::NONE,
-                });
-                let _ = renderer.insert_object(ObjectDescriptor {
-                    mesh: roof,
-                    material: mat,
-                    transform: glam::Mat4::IDENTITY,
-                    bounds: [0.0, 0.0, 0.0, 4.5],
-                    flags: 0,
-                    groups: helio::GroupMask::NONE,
-                });
+                let _ = insert_object(&mut renderer, ground, mat, glam::Mat4::IDENTITY, 20.0);
+                let _ = insert_object(&mut renderer, roof, mat,
+                    glam::Mat4::from_translation(glam::Vec3::new(0.0, 2.85, 0.0)), 4.5);
 
                 let init_sun_angle = 1.0f32;
                 let init_sun_dir = glam::Vec3::new(init_sun_angle.cos() * 0.3, init_sun_angle.sin(), 0.5).normalize();
                 let init_light_dir = [-init_sun_dir.x, -init_sun_dir.y, -init_sun_dir.z];
                 let init_elev = init_sun_dir.y.clamp(-1.0, 1.0);
                 let init_lux  = (init_elev * 3.0).clamp(0.0, 1.0);
-                let sun_light_id = renderer.insert_light(directional_light(
-                    init_light_dir, [1.0, 0.85, 0.7], (init_lux * 0.35).max(0.01),
+
+                // Insert lights using SceneActor API
+                let sun_light_id = renderer.scene_mut().insert_actor(SceneActor::light(
+                    directional_light(init_light_dir, [1.0, 0.85, 0.7], (init_lux * 0.35).max(0.01))
+                )).as_light().unwrap();
+
+                renderer.scene_mut().insert_actor(SceneActor::light(
+                    point_light([ 0.0, 2.5,  0.0], [1.0, 0.85, 0.6], 4.0, 8.0)
                 ));
-                renderer.insert_light(point_light([ 0.0, 2.5,  0.0], [1.0, 0.85, 0.6], 4.0, 8.0));
-                renderer.insert_light(point_light([-2.5, 2.0, -1.5], [0.4, 0.6,  1.0], 3.5, 7.0));
-                renderer.insert_light(point_light([ 2.5, 1.8,  1.5], [1.0, 0.3,  0.3], 3.0, 6.0));
+                renderer.scene_mut().insert_actor(SceneActor::light(
+                    point_light([-2.5, 2.0, -1.5], [0.4, 0.6,  1.0], 3.5, 7.0)
+                ));
+                renderer.scene_mut().insert_actor(SceneActor::light(
+                    point_light([ 2.5, 1.8,  1.5], [1.0, 0.3,  0.3], 3.0, 6.0)
+                ));
+
                 renderer.set_ambient([0.15, 0.18, 0.25], 0.08);
 
                 let mut state = HelioRenderState {
                     renderer,
-                    cube1, cube2, cube3,
                     cube1_obj, cube2_obj, cube3_obj,
-                    ground, roof,
-                    mat,
                     sun_light_id,
                     sun_angle: init_sun_angle,
                     animation_time: 0.0,
@@ -375,10 +390,10 @@ fn main() {
                         (t * 0.8).sin() * 1.5
                     )) * glam::Mat4::from_rotation_z(t * 1.2);
 
-                    // Update object transforms
-                    let _ = state.renderer.update_object_transform(state.cube1_obj, cube1_transform);
-                    let _ = state.renderer.update_object_transform(state.cube2_obj, cube2_transform);
-                    let _ = state.renderer.update_object_transform(state.cube3_obj, cube3_transform);
+                    // Update object transforms using scene_mut API
+                    let _ = state.renderer.scene_mut().update_object_transform(state.cube1_obj, cube1_transform);
+                    let _ = state.renderer.scene_mut().update_object_transform(state.cube2_obj, cube2_transform);
+                    let _ = state.renderer.scene_mut().update_object_transform(state.cube3_obj, cube3_transform);
 
                     log::trace!("Helio render loop: updated transforms - cube1 y={:.2}, cube2 pos=({:.2},{:.2},{:.2})",
                         0.5 + (t * 0.5).sin() * 0.15,
@@ -413,7 +428,7 @@ fn main() {
                         (0.7  + sun_elev * 0.3 ).clamp(0.0, 1.0),
                     ];
 
-                    let _ = state.renderer.update_light(
+                    let _ = state.renderer.scene_mut().update_light(
                         state.sun_light_id,
                         directional_light(light_dir, sun_color, (sun_lux * 0.35).max(0.01)),
                     );
