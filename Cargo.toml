@@ -96,7 +96,7 @@ core-video = "0.5.2"
 
 [dev-dependencies]
 backtrace = "0.3"
-helio = { git="https://github.com/Far-Beyond-Pulsar/Helio", rev="151aae8e1e0325dc77317042b4e83da767e7f872" }
+helio = { git="https://github.com/Far-Beyond-Pulsar/Helio", rev="2759c4c059a095b569b1eea41f29b34a28625620" }
 glam = "0.29"
 env_logger = "0.11"
 collections = { package = "gpui_collections", version = "0.2.2", features = [

@@ -115,7 +115,7 @@ fn insert_object(
             ],
             flags: 0,
             groups: helio::GroupMask::NONE,
-            movability: None,
+            movability: Some(helio::Movability::Movable),
         }))
         .as_object()
         .ok_or(helio::SceneError::InvalidHandle { resource: "object" })
