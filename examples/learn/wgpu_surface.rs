@@ -443,19 +443,11 @@ fn main() {
                     // Must drop view BEFORE present to release the texture lock
                     drop(view);
 
-                    // GPU SYNC: Helio's renderer internally does queue.submit() but doesn't
-                    // expose the SubmissionIndex. As a workaround, submit a no-op command
-                    // buffer to get a submission index that represents "all work up to now".
-                    // This ensures the compositor waits for Helio's rendering to complete.
-                    let encoder = surface_thread.device().create_command_encoder(
-                        &wgpu::CommandEncoderDescriptor {
-                            label: Some("sync_marker"),
-                        }
-                    );
-                    let submission_idx = surface_thread.queue().submit([encoder.finish()]);
-
-                    // Present the frame with GPU synchronization (recommended)
-                    surface_thread.present_synced(submission_idx);
+                    // Present the frame (non-blocking, Winit-style)
+                    // Note: Using deprecated present() for now - the marker encoder approach
+                    // was causing device instability
+                    #[allow(deprecated)]
+                    surface_thread.present();
 
                     // Immediately loop to render next frame - no blocking!
                     // The triple-buffer system handles synchronization automatically.
