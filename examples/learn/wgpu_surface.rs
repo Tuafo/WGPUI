@@ -249,7 +249,7 @@ fn main() {
 
                 log::info!("Initializing Helio renderer {}x{} {:?}", width, height, format);
 
-                let mut renderer = Renderer::new(
+                let mut renderer = Renderer::new_with_external_device(
                     device,
                     queue,
                     RendererConfig::new(width, height, format),
