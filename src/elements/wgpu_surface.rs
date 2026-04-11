@@ -101,28 +101,65 @@ impl WgpuSurfaceHandle {
             .lock_and_get_back_with_size(self.inner.surface_id)
     }
 
-    /// Present the rendered frame to the compositor (non-blocking, Winit-style).
+    /// Present the rendered frame with GPU synchronization (recommended).
     ///
     /// This atomically swaps the rendering and ready buffers, making your newly
     /// rendered frame available to the compositor, and triggers a window redraw request.
+    ///
+    /// The `submission_index` parameter (returned by `queue.submit()`) allows the
+    /// compositor to poll the GPU and ensure rendering is complete before sampling
+    /// the texture. This prevents visual artifacts from reading incomplete frames.
     ///
     /// **Returns immediately** - external threads can continue rendering the next
     /// frame without waiting for the compositor. This is the key difference from
     /// traditional blocking present models.
     ///
-    /// The compositor will pick up the frame the next time it renders. If the
-    /// external thread is faster than the compositor, some frames may be dropped.
-    /// If the compositor is faster, the same frame may be displayed multiple times.
-    /// This is identical to how native Winit windows behave.
-    pub fn present(&self) {
-        // Atomically swap rendering ↔ ready buffers (lock-free operation)
+    /// # Example
+    /// ```no_run
+    /// // Render to the back buffer
+    /// let view = surface.back_buffer_view()?;
+    /// // ... encode commands ...
+    /// let submission_idx = queue.submit([encoder.finish()]);
+    /// drop(view);
+    ///
+    /// // Present with GPU sync
+    /// surface.present_synced(submission_idx);
+    /// ```
+    pub fn present_synced(&self, submission_index: wgpu::SubmissionIndex) {
+        // Atomically swap rendering ↔ ready buffers with GPU sync
         self.inner
             .registry
-            .swap_rendering_ready(self.inner.surface_id);
+            .swap_rendering_ready(self.inner.surface_id, submission_index);
 
-        // Track that this surface has new content to be composited.
-        // There may already be a pending redraw, but we still request an OS redraw
-        // to survive dropped/lost redraw events (so we don't stall at frame 1).
+        // Track that this surface has new content to be composited
+        self.inner
+            .registry
+            .set_redraw_pending(self.inner.surface_id);
+
+        if let Some(winit) = &self.inner.winit_window {
+            winit.request_redraw();
+        } else {
+            (self.inner.present_trigger)();
+        }
+
+        // Return immediately - no blocking
+    }
+
+    /// Present the rendered frame without GPU synchronization (deprecated).
+    ///
+    /// **DEPRECATED**: Use [`present_synced()`](Self::present_synced) instead for proper
+    /// GPU synchronization. This method may cause visual artifacts if the compositor
+    /// samples the texture before GPU rendering is complete.
+    ///
+    /// This method exists for backward compatibility only.
+    #[deprecated(note = "Use present_synced() for proper GPU synchronization")]
+    pub fn present(&self) {
+        // Atomically swap rendering ↔ ready buffers (no GPU sync)
+        self.inner
+            .registry
+            .swap_rendering_ready_no_sync(self.inner.surface_id);
+
+        // Track that this surface has new content to be composited
         self.inner
             .registry
             .set_redraw_pending(self.inner.surface_id);

@@ -374,14 +374,14 @@ fn main() {
                         0.0
                     )) * glam::Mat4::from_rotation_y(t * 0.8);  // Rotate
 
-                    // Cube 2: Orbit around center
+                    // Cube 2: Orbit around center with spinning
                     let orbit_radius = 2.5;
                     let orbit_speed = 0.6;
                     let cube2_transform = glam::Mat4::from_translation(glam::Vec3::new(
                         (t * orbit_speed).cos() * orbit_radius,
                         0.4,
                         (t * orbit_speed).sin() * orbit_radius
-                    )) * glam::Mat4::from_rotation_y(t * 1.5) * glam::Mat4::from_rotation_x(t * 0.5);
+                    )) * glam::Mat4::from_rotation_y(t * 3.0) * glam::Mat4::from_rotation_x(t * 2.5) * glam::Mat4::from_rotation_z(t * 1.8);
 
                     // Cube 3: Figure-8 pattern
                     let cube3_transform = glam::Mat4::from_translation(glam::Vec3::new(
@@ -443,8 +443,19 @@ fn main() {
                     // Must drop view BEFORE present to release the texture lock
                     drop(view);
 
-                    // Present the frame (non-blocking, Winit-style)
-                    surface_thread.present();
+                    // GPU SYNC: Helio's renderer internally does queue.submit() but doesn't
+                    // expose the SubmissionIndex. As a workaround, submit a no-op command
+                    // buffer to get a submission index that represents "all work up to now".
+                    // This ensures the compositor waits for Helio's rendering to complete.
+                    let encoder = surface_thread.device().create_command_encoder(
+                        &wgpu::CommandEncoderDescriptor {
+                            label: Some("sync_marker"),
+                        }
+                    );
+                    let submission_idx = surface_thread.queue().submit([encoder.finish()]);
+
+                    // Present the frame with GPU synchronization (recommended)
+                    surface_thread.present_synced(submission_idx);
 
                     // Immediately loop to render next frame - no blocking!
                     // The triple-buffer system handles synchronization automatically.
