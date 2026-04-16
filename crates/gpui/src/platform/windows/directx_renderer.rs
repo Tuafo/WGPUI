@@ -7,7 +7,7 @@ use ::util::ResultExt;
 use anyhow::{Context, Result};
 use windows::{
     Win32::{
-        Foundation::HWND,
+        Foundation::{HANDLE, HWND},
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
@@ -90,11 +90,13 @@ struct DirectXRenderPipelines {
     underline_pipeline: PipelineState<Underline>,
     mono_sprites: PipelineState<MonochromeSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
+    surface_pipeline: PipelineState<SurfaceInstance>,
 }
 
 struct DirectXGlobalElements {
     global_params_buffer: Option<ID3D11Buffer>,
     sampler: Option<ID3D11SamplerState>,
+    clamp_sampler: Option<ID3D11SamplerState>,
 }
 
 struct DirectComposition {
@@ -625,6 +627,132 @@ impl DirectXRenderer {
         if surfaces.is_empty() {
             return Ok(());
         }
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let resources = self.resources.as_ref().context("resources missing")?;
+
+        for surface in surfaces {
+            let SurfaceSource::SharedTexture {
+                nt_handle, format, ..
+            } = &surface.source;
+
+            if *nt_handle == 0 {
+                log::warn!("Skipping surface with null NT handle");
+                continue;
+            }
+
+            // Import the shared texture from the external renderer's device.
+            // OpenSharedResource1 opens an NT handle created by
+            // IDXGIResource1::CreateSharedHandle on the producer side.
+            // This is zero-copy — both devices reference the same GPU memory.
+            let texture: ID3D11Texture2D = match unsafe {
+                let device1: ID3D11Device1 = devices.device.cast()?;
+                device1.OpenSharedResource1::<ID3D11Texture2D>(HANDLE(*nt_handle as _))
+            } {
+                Ok(tex) => tex,
+                Err(e) => {
+                    log::error!("Failed to open shared texture (handle={:#x}): {}", nt_handle, e);
+                    continue;
+                }
+            };
+
+            // Validate texture format matches what the producer declared.
+            let desc = unsafe {
+                let mut desc = std::mem::zeroed();
+                texture.GetDesc(&mut desc);
+                desc
+            };
+            let expected_dxgi_format = gpu_texture_format_to_dxgi(*format);
+            if desc.Format != expected_dxgi_format {
+                log::error!(
+                    "Surface format mismatch: producer declared {:?} (DXGI {:?}) but texture has {:?}",
+                    format, expected_dxgi_format, desc.Format
+                );
+                continue;
+            }
+
+            // Keyed mutex protocol for GPU synchronization between devices:
+            //   Producer: AcquireSync(0) → write → ReleaseSync(1)
+            //   Consumer: AcquireSync(1) → read  → ReleaseSync(0)
+            // If the texture doesn't support keyed mutex (created with
+            // MISC_SHARED_NTHANDLE only), the cast fails and we skip sync.
+            let keyed_mutex: Option<IDXGIKeyedMutex> = texture.cast().ok();
+            if let Some(ref mutex) = keyed_mutex {
+                // AcquireSync returns S_OK (0) on success, but the windows crate
+                // wraps HRESULT via .ok() which also treats WAIT_TIMEOUT (0x102) as
+                // Ok(()). We call the vtable directly to get the raw HRESULT so we
+                // can distinguish success from timeout.
+                let raw_hr = unsafe {
+                    (Interface::vtable(mutex).AcquireSync)(
+                        Interface::as_raw(mutex),
+                        1, // consumer key
+                        0, // non-blocking
+                    )
+                };
+                if raw_hr.0 != 0 {
+                    // Producer hasn't released yet — skip this surface for this frame.
+                    continue;
+                }
+            }
+
+            // Create SRV with explicit format to avoid ambiguity with typeless textures.
+            let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                Format: expected_dxgi_format,
+                ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                    },
+                },
+            };
+            let srv = match unsafe {
+                let mut srv = None;
+                devices
+                    .device
+                    .CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv))
+                    .map(|_| srv)
+            } {
+                Ok(Some(srv)) => srv,
+                Ok(None) => {
+                    if let Some(ref mutex) = keyed_mutex {
+                        unsafe { mutex.ReleaseSync(0).ok() };
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    log::error!("Failed to create SRV for shared surface: {}", e);
+                    if let Some(ref mutex) = keyed_mutex {
+                        unsafe { mutex.ReleaseSync(0).ok() };
+                    }
+                    continue;
+                }
+            };
+
+            let instance = SurfaceInstance {
+                bounds: surface.bounds,
+                content_mask: surface.content_mask.bounds,
+            };
+
+            self.pipelines.surface_pipeline.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &[instance],
+            )?;
+
+            self.pipelines.surface_pipeline.draw_with_texture(
+                &devices.device_context,
+                &[Some(srv)],
+                slice::from_ref(&resources.viewport),
+                slice::from_ref(&self.globals.global_params_buffer),
+                slice::from_ref(&self.globals.clamp_sampler),
+                1,
+            )?;
+
+            if let Some(ref mutex) = keyed_mutex {
+                unsafe { mutex.ReleaseSync(0).ok() };
+            }
+        }
+
         Ok(())
     }
 
@@ -796,6 +924,13 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
+        let surface_pipeline = PipelineState::new(
+            device,
+            "surface_pipeline",
+            ShaderModule::Surface,
+            4,
+            create_blend_state(device)?,
+        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -805,6 +940,7 @@ impl DirectXRenderPipelines {
             underline_pipeline,
             mono_sprites,
             poly_sprites,
+            surface_pipeline,
         })
     }
 }
@@ -865,9 +1001,28 @@ impl DirectXGlobalElements {
             output
         };
 
+        let clamp_sampler = unsafe {
+            let desc = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MipLODBias: 0.0,
+                MaxAnisotropy: 1,
+                ComparisonFunc: D3D11_COMPARISON_ALWAYS,
+                BorderColor: [0.0; 4],
+                MinLOD: 0.0,
+                MaxLOD: D3D11_FLOAT32_MAX,
+            };
+            let mut output = None;
+            device.CreateSamplerState(&desc, Some(&mut output))?;
+            output
+        };
+
         Ok(Self {
             global_params_buffer,
             sampler,
+            clamp_sampler,
         })
     }
 }
@@ -1014,6 +1169,13 @@ struct PathRasterizationSprite {
 #[repr(C)]
 struct PathSprite {
     bounds: Bounds<ScaledPixels>,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct SurfaceInstance {
+    bounds: Bounds<ScaledPixels>,
+    content_mask: Bounds<ScaledPixels>,
 }
 
 impl Drop for DirectXRenderer {
@@ -1412,6 +1574,7 @@ pub(crate) mod shader_resources {
         MonochromeSprite,
         PolychromeSprite,
         EmojiRasterization,
+        Surface,
     }
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1484,6 +1647,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::EmojiRasterization => match target {
                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
                     ShaderTarget::Fragment => EMOJI_RASTERIZATION_FRAGMENT_BYTES,
+                },
+                ShaderModule::Surface => match target {
+                    ShaderTarget::Vertex => SURFACE_VERTEX_BYTES,
+                    ShaderTarget::Fragment => SURFACE_FRAGMENT_BYTES,
                 },
             };
             Self { inner: bytes }
@@ -1571,8 +1738,17 @@ pub(crate) mod shader_resources {
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",
+                ShaderModule::Surface => "surface",
             }
         }
+    }
+}
+
+fn gpu_texture_format_to_dxgi(format: GpuTextureFormat) -> DXGI_FORMAT {
+    match format {
+        GpuTextureFormat::RGBA8 => DXGI_FORMAT_R8G8B8A8_UNORM,
+        GpuTextureFormat::BGRA8 => DXGI_FORMAT_B8G8R8A8_UNORM,
+        GpuTextureFormat::RGBA16F => DXGI_FORMAT_R16G16B16A16_FLOAT,
     }
 }
 

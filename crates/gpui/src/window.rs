@@ -3555,6 +3555,11 @@ impl Window {
     }
 
     /// Paint a GPU texture into the scene for the next frame at the current z-index.
+    ///
+    /// This converts a platform-agnostic `GpuTextureHandle` into a platform-specific
+    /// `SurfaceSource` for the renderer to import and composite. The external renderer
+    /// and GPUI's compositor use separate GPU devices — texture memory is shared
+    /// zero-copy via OS-level handles.
     pub fn paint_gpu_texture(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -3566,25 +3571,29 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let bounds = bounds.scale(scale_factor);
         let content_mask = self.content_mask().scale(scale_factor);
 
-        // Convert universal GpuTextureHandle to platform-specific SurfaceSource
-        // All platforms use the same RGBA8 byte format - just different OS handles
+        // Apply object_fit to adjust bounds based on texture aspect ratio
+        let texture_size = crate::size(
+            crate::Pixels(texture_handle.width as f32),
+            crate::Pixels(texture_handle.height as f32),
+        );
+        let fitted_bounds = object_fit.get_bounds(bounds, texture_size);
+        let bounds = fitted_bounds.scale(scale_factor);
+
         #[cfg(target_os = "windows")]
         let source = SurfaceSource::SharedTexture {
             nt_handle: texture_handle.native_handle,
             width: texture_handle.width,
             height: texture_handle.height,
+            format: texture_handle.format,
         };
 
         #[cfg(target_os = "macos")]
         let source = {
             // On macOS, native_handle is an IOSurface ID
-            // Create IOSurface from the handle
             use metal::IOSurface;
             let io_surface = unsafe {
-                // IOSurface::from_id creates an IOSurface from its integer ID
                 IOSurface::from_id(texture_handle.native_handle as u32)
             };
             SurfaceSource::ImageBuffer(io_surface)
@@ -3595,6 +3604,7 @@ impl Window {
             fd: texture_handle.native_handle as i32,
             width: texture_handle.width,
             height: texture_handle.height,
+            format: texture_handle.format,
         };
 
         self.next_frame.scene.insert_primitive(PaintSurface {
@@ -3611,7 +3621,7 @@ impl Window {
     /// This method should only be called as part of the paint phase of element drawing.
     #[cfg(target_os = "macos")]
     pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
-        use crate::PaintSurface;
+        use crate::{PaintSurface, SurfaceSource};
 
         self.invalidator.debug_assert_paint();
 
@@ -3622,7 +3632,8 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
-            image_buffer,
+            object_fit: crate::ObjectFit::Fill,
+            source: SurfaceSource::ImageBuffer(image_buffer),
         });
     }
 

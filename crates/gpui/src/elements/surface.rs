@@ -1,26 +1,34 @@
 use crate::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
+    App, Bounds, Element, ElementId, GpuTextureFormat, GlobalElementId, InspectorElementId,
+    IntoElement, LayoutId, ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
 };
 #[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
 use refineable::Refineable;
 
 /// A source of a surface's content.
+///
+/// Each variant carries platform-native handles that reference shared GPU memory,
+/// enabling zero-copy texture sharing between separate GPU devices. External
+/// renderers create textures on their own device and share the underlying memory
+/// via OS-level handles. GPUI's compositor imports these handles on its own
+/// device for compositing — no shared device, no contention.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SurfaceSource {
     /// A macOS image buffer from CoreVideo
     #[cfg(target_os = "macos")]
     ImageBuffer(CVPixelBuffer),
-    /// Windows shared texture handle
+    /// Windows shared texture handle (NT handle from IDXGIResource1::CreateSharedHandle)
     #[cfg(target_os = "windows")]
     SharedTexture {
-        /// Native handle to the shared texture
+        /// Native NT handle to the shared texture
         nt_handle: isize,
         /// Width of the texture in pixels
         width: u32,
         /// Height of the texture in pixels
         height: u32,
+        /// Texture format
+        format: GpuTextureFormat,
     },
     /// Linux DMA-BUF file descriptor
     #[cfg(target_os = "linux")]
@@ -31,13 +39,15 @@ pub enum SurfaceSource {
         width: u32,
         /// Height of the texture in pixels
         height: u32,
+        /// Texture format
+        format: GpuTextureFormat,
     },
 }
 
 #[cfg(target_os = "macos")]
 impl From<CVPixelBuffer> for SurfaceSource {
     fn from(value: CVPixelBuffer) -> Self {
-        SurfaceSource::Surface(value)
+        SurfaceSource::ImageBuffer(value)
     }
 }
 
@@ -113,11 +123,10 @@ impl Element for Surface {
     ) {
         match &self.source {
             #[cfg(target_os = "macos")]
-            SurfaceSource::Surface(surface) => {
-                let size = crate::size(surface.get_width().into(), surface.get_height().into());
+            SurfaceSource::ImageBuffer(image_buffer) => {
+                let size = crate::size(image_buffer.get_width().into(), image_buffer.get_height().into());
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
-                // TODO: Add support for corner_radii
-                window.paint_surface(new_bounds, surface.clone());
+                window.paint_surface(new_bounds, image_buffer.clone());
             }
             #[allow(unreachable_patterns)]
             _ => {}
