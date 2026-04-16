@@ -1,26 +1,13 @@
 /// Example: WgpuSurface with Helio Sky Renderer
 /// Demonstrates integration of helio's scene-driven renderer with a gpui WgpuSurface.
 use gpui::{
-    App, Application, Context, FocusHandle, Focusable, KeyDownEvent, KeyUpEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent,
-    Window, WindowOptions, div, prelude::*, px, rgb, wgpu_surface, WgpuSurfaceHandle,
+    App, Application, Context, Render, Window, WindowOptions, div, prelude::*,
+    wgpu_surface, WgpuSurfaceHandle, rgb,
 };
 use std::thread;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-
-#[derive(Default)]
-struct SharedInput {
-    yaw_delta: f32,
-    pitch_delta: f32,
-    move_forward: bool,
-    move_backward: bool,
-    move_left: bool,
-    move_right: bool,
-    move_up: bool,
-    move_down: bool,
-    scroll_delta: f32,
-}
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use helio::{
     Camera, GpuLight, GpuMaterial, LightId, LightType, MaterialId, MeshId,
@@ -166,7 +153,6 @@ struct HelioRenderState {
     cube2_obj: ObjectId,
     cube3_obj: ObjectId,
     sun_light_id: LightId,
-    center_light_id: LightId,
     sun_angle: f32,
     animation_time: f32,
     cam_pos: glam::Vec3,
@@ -180,122 +166,36 @@ struct SurfaceExample {
     surface: WgpuSurfaceHandle,
     fps_rx: std::sync::mpsc::Receiver<f64>,
     display_fps: f64,
-    input: Arc<Mutex<SharedInput>>,
-    dragging: bool,
-    last_mouse_pos: Option<gpui::Point<gpui::Pixels>>,
-    focus_handle: FocusHandle,
-    /// Join handle for the `helio_render` thread.  Stored so `Drop` can
-    /// signal shutdown and wait for the thread to release its `SurfaceTexture`
-    /// before the `WgpuSurfaceHandle` (and the underlying wgpu surface) drops.
+    shutdown: Arc<AtomicBool>,
     render_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for SurfaceExample {
     fn drop(&mut self) {
-        // When `self.surface` is dropped, it's automatically removed from the registry,
-        // causing `back_view_with_size()` to return None and the render loop to exit cleanly.
-        // We just need to wait for the thread to finish.
+        self.shutdown.store(true, AtomicOrdering::SeqCst);
         if let Some(handle) = self.render_thread.take() {
             let _ = handle.join();
         }
     }
 }
 
-impl Focusable for SurfaceExample {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
 impl Render for SurfaceExample {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         log::trace!("SurfaceExample::render called");
         while let Ok(f) = self.fps_rx.try_recv() {
             self.display_fps = f;
         }
-        log::trace!("SurfaceExample::render: requesting animation frame");
         window.request_animation_frame();
 
-        let focus_handle = self.focus_handle.clone();
-
         div()
-            .w(px(1720.0))
-            .h(px(1080.0))
+            .w(gpui::px(1720.0))
+            .h(gpui::px(1080.0))
             .border_4()
             .border_color(rgb(0x00aaff))
             .rounded_lg()
             .shadow_xl()
             .bg(rgb(0x000000))
-            .m(px(8.0))
-            .track_focus(&focus_handle)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, _cx| {
-                    this.dragging = true;
-                    this.last_mouse_pos = Some(event.position);
-                    window.focus(&this.focus_handle);
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
-                    this.dragging = false;
-                    this.last_mouse_pos = None;
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, _cx| {
-                if this.dragging {
-                    if let Some(last) = this.last_mouse_pos {
-                        let dx = f32::from(event.position.x) - f32::from(last.x);
-                        let dy = f32::from(event.position.y) - f32::from(last.y);
-                        let sensitivity = 0.005;
-                        if let Ok(mut input) = this.input.lock() {
-                            input.yaw_delta += dx * sensitivity;
-                            input.pitch_delta -= dy * sensitivity;
-                        }
-                    }
-                    this.last_mouse_pos = Some(event.position);
-                }
-            }))
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, _cx| {
-                let delta = match event.delta {
-                    gpui::ScrollDelta::Pixels(pt) => f32::from(pt.y),
-                    gpui::ScrollDelta::Lines(pt) => pt.y * 40.0,
-                };
-                if let Ok(mut input) = this.input.lock() {
-                    input.scroll_delta += delta * 0.01;
-                }
-            }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
-                let mut input = match this.input.lock() {
-                    Ok(i) => i,
-                    Err(_) => return,
-                };
-                match event.keystroke.key.as_str() {
-                    "w" | "up" => input.move_forward = true,
-                    "s" | "down" => input.move_backward = true,
-                    "a" | "left" => input.move_left = true,
-                    "d" | "right" => input.move_right = true,
-                    "space" | "e" => input.move_up = true,
-                    "q" | "c" => input.move_down = true,
-                    _ => {}
-                }
-            }))
-            .on_key_up(cx.listener(|this, event: &KeyUpEvent, _window, _cx| {
-                let mut input = match this.input.lock() {
-                    Ok(i) => i,
-                    Err(_) => return,
-                };
-                match event.keystroke.key.as_str() {
-                    "w" | "up" => input.move_forward = false,
-                    "s" | "down" => input.move_backward = false,
-                    "a" | "left" => input.move_left = false,
-                    "d" | "right" => input.move_right = false,
-                    "space" | "e" => input.move_up = false,
-                    "q" | "c" => input.move_down = false,
-                    _ => {}
-                }
-            }))
+            .m(gpui::px(8.0))
             .child(
                 wgpu_surface(self.surface.clone())
                     .absolute()
@@ -304,20 +204,11 @@ impl Render for SurfaceExample {
             .child(
                 div()
                     .absolute()
-                    .top(px(4.0))
-                    .left(px(8.0))
+                    .top(gpui::px(4.0))
+                    .left(gpui::px(8.0))
                     .text_color(rgb(0x00aaff))
                     .text_xl()
                     .child(format!("FPS: {:.1} | Helio Sky Renderer", self.display_fps))
-            )
-            .child(
-                div()
-                    .absolute()
-                    .bottom(px(4.0))
-                    .left(px(8.0))
-                    .text_color(rgb(0x88bbdd))
-                    .text_sm()
-                    .child("Click to focus · Drag to look · WASD to move · Q/E up/down · Scroll to zoom")
             )
     }
 }
@@ -331,17 +222,18 @@ fn main() {
             let surface_thread = surface.clone();
             let fps_data: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
             let (fps_tx, fps_rx) = std::sync::mpsc::channel::<f64>();
-            let shared_input: Arc<Mutex<SharedInput>> = Arc::new(Mutex::new(SharedInput::default()));
-            let input_render = shared_input.clone();
 
             log::info!("Spawning Helio render thread...");
             let fps_shared = fps_data.clone();
+            let shutdown_flag = Arc::new(AtomicBool::new(false));
+            let shutdown_render = shutdown_flag.clone();
             let render_thread = thread::Builder::new()
                 .name("helio_render".to_string())
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
                 log::info!("Helio render thread started");
                 loop {
+                    if shutdown_render.load(AtomicOrdering::SeqCst) { return; }
                     if surface_thread.back_buffer_view().is_some() { break; }
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -409,9 +301,9 @@ fn main() {
                     directional_light(init_light_dir, [1.0, 0.85, 0.7], (init_lux * 0.35).max(0.01))
                 )).as_light().unwrap();
 
-                let center_light_id = renderer.scene_mut().insert_actor(SceneActor::light(
+                renderer.scene_mut().insert_actor(SceneActor::light(
                     point_light([ 0.0, 2.5,  0.0], [1.0, 0.85, 0.6], 4.0, 8.0)
-                )).as_light().unwrap();
+                ));
                 renderer.scene_mut().insert_actor(SceneActor::light(
                     point_light([-2.5, 2.0, -1.5], [0.4, 0.6,  1.0], 3.5, 7.0)
                 ));
@@ -425,7 +317,6 @@ fn main() {
                     renderer,
                     cube1_obj, cube2_obj, cube3_obj,
                     sun_light_id,
-                    center_light_id,
                     sun_angle: init_sun_angle,
                     animation_time: 0.0,
                     cam_pos: glam::Vec3::new(0.0, 2.5, 7.0),
@@ -442,6 +333,10 @@ fn main() {
                 let mut last_frame_time = std::time::Instant::now();
 
                 loop {
+                    if shutdown_render.load(AtomicOrdering::SeqCst) {
+                        log::info!("Helio render loop: shutdown requested, exiting");
+                        break;
+                    }
                     // Non-blocking Winit-style render loop: Get back buffer and render immediately
                     let (view, (dw, dh)) = match surface_thread.back_view_with_size() {
                         Some(tuple) => tuple,
@@ -467,41 +362,7 @@ fn main() {
                     state.sun_angle += 0.1 * dt;
                     state.animation_time += dt;
 
-                    // Consume input from the GPUI thread
-                    if let Ok(mut input) = input_render.lock() {
-                        state.cam_yaw += input.yaw_delta;
-                        state.cam_pitch = (state.cam_pitch + input.pitch_delta)
-                            .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
-                        input.yaw_delta = 0.0;
-                        input.pitch_delta = 0.0;
-
-                        let (sy, cy) = state.cam_yaw.sin_cos();
-                        let (sp, cp) = state.cam_pitch.sin_cos();
-                        let forward = glam::Vec3::new(sy * cp, sp, -cy * cp);
-                        let right = glam::Vec3::new(cy, 0.0, sy);
-                        let move_speed = 5.0 * dt;
-
-                        if input.move_forward  { state.cam_pos += forward * move_speed; }
-                        if input.move_backward { state.cam_pos -= forward * move_speed; }
-                        if input.move_left     { state.cam_pos -= right * move_speed; }
-                        if input.move_right    { state.cam_pos += right * move_speed; }
-                        if input.move_up       { state.cam_pos.y += move_speed; }
-                        if input.move_down     { state.cam_pos.y -= move_speed; }
-
-                        if input.scroll_delta != 0.0 {
-                            state.cam_pos += forward * input.scroll_delta * 2.0;
-                            input.scroll_delta = 0.0;
-                        }
-                    }
-
-                    // Animate the center light up and down
-                    let light_y = 1.5 + (state.animation_time * 0.8).sin() * 1.2;
-                    let _ = state.renderer.scene_mut().update_light(
-                        state.center_light_id,
-                        point_light([0.0, light_y, 0.0], [1.0, 0.85, 0.6], 4.0, 8.0),
-                    );
-
-                    log::debug!("Helio render loop: dt={:.4}s, animation_time={:.2}s", dt, state.animation_time);
+                    log::trace!("Helio render loop: dt={:.4}s, animation_time={:.2}s", dt, state.animation_time);
 
                     // Animate the cubes with rotation and orbital motion
                     let t = state.animation_time;
@@ -599,14 +460,11 @@ fn main() {
                 }
             }).expect("Failed to spawn Helio render thread");
 
-            let handle = cx.new(|cx| SurfaceExample {
+            let handle = cx.new(|_cx| SurfaceExample {
                 surface,
                 fps_rx,
                 display_fps: 0.0,
-                input: shared_input,
-                dragging: false,
-                last_mouse_pos: None,
-                focus_handle: cx.focus_handle(),
+                shutdown: shutdown_flag,
                 render_thread: Some(render_thread),
             });
 

@@ -1684,7 +1684,7 @@ impl WgpuRenderer {
                         log::debug!("Renderer: processing {} surface(s)", surfaces.len());
                         for surface in surfaces {
                             if let crate::SurfaceContent::Wgpu(surface_id) = &surface.content {
-                                log::info!("[COMPOSITOR PAINT] Processing WGPU surface {:?}", surface_id);
+                                log::trace!("[COMPOSITOR PAINT] Processing WGPU surface {:?}", surface_id);
 
                                 // Atomically swap ready ↔ display buffers with GPU sync
                                 let swapped = self.context.surface_registry.swap_ready_display(
@@ -1692,12 +1692,12 @@ impl WgpuRenderer {
                                     *surface_id
                                 );
 
-                                log::info!("[COMPOSITOR PAINT] Swap result: {}", swapped);
+                                log::trace!("[COMPOSITOR PAINT] Swap result: {}", swapped);
 
                                 if let Some(view) =
                                     self.context.surface_registry.front_view(*surface_id)
                                 {
-                                    log::info!("[COMPOSITOR PAINT] Got front view for surface {:?}", surface_id);
+                                    log::trace!("[COMPOSITOR PAINT] Got front view for surface {:?}", surface_id);
 
                                     let params = SurfaceParams {
                                         bounds: Bounds {
@@ -1829,7 +1829,7 @@ impl WgpuRenderer {
     /// Fast path: blit a surface directly to persistent framebuffer WITHOUT running compositor
     /// Returns true if successful, false if bounds cache miss (need full compositor)
     pub fn blit_surface_direct(&self, surface_id: SurfaceId) -> bool {
-        log::info!("[FAST BLIT] Attempting for surface {:?}", surface_id);
+        log::trace!("[FAST BLIT] Attempting for surface {:?}", surface_id);
 
         // 1. Check if we have cached bounds
         let cache = self.surface_bounds_cache.lock().unwrap();
@@ -1997,7 +1997,7 @@ impl WgpuRenderer {
             .surface_registry
             .clear_redraw_pending(surface_id);
 
-        log::info!("[FAST BLIT] SUCCESS for surface {:?}", surface_id);
+        log::trace!("[FAST BLIT] SUCCESS for surface {:?}", surface_id);
         true // Success
     }
 
@@ -2009,6 +2009,11 @@ impl WgpuRenderer {
         } else {
             Some(pending)
         }
+    }
+
+    /// Clear the redraw-pending flag for a surface without blitting.
+    pub fn clear_surface_redraw(&self, surface_id: SurfaceId) {
+        self.context.surface_registry.clear_redraw_pending(surface_id);
     }
 
     /// Present without running compositor (fast blit already updated swapchain)
@@ -2024,31 +2029,43 @@ impl WgpuRenderer {
         self.surface
             .configure(&self.context.device, &self.surface_configuration);
 
-        // Recreate persistent framebuffer at new size
-        let persistent_framebuffer =
-            self.context
-                .device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("persistent_framebuffer"),
-                    size: wgpu::Extent3d {
-                        width: self.surface_configuration.width,
-                        height: self.surface_configuration.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: self.surface_configuration.format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
+        // Recreate persistent framebuffer at new size.
+        // During shutdown the device can become invalid, making
+        // `create_texture` produce invalid handles whose `create_view`
+        // panics.  We catch that panic so it doesn't crash the process.
+        let device = &self.context.device;
+        let config = &self.surface_configuration;
 
-        let persistent_framebuffer_view =
-            persistent_framebuffer.create_view(&wgpu::TextureViewDescriptor::default());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("persistent_framebuffer"),
+                size: wgpu::Extent3d {
+                    width: config.width,
+                    height: config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            (texture, view)
+        }));
 
-        self.persistent_framebuffer = Some(persistent_framebuffer);
-        self.persistent_framebuffer_view = Some(persistent_framebuffer_view);
+        match result {
+            Ok((texture, view)) => {
+                self.persistent_framebuffer = Some(texture);
+                self.persistent_framebuffer_view = Some(view);
+            }
+            Err(_) => {
+                log::warn!("Device lost during resize – skipping framebuffer recreation");
+                return;
+            }
+        }
 
         // Invalidate bounds cache - all surface bounds are now stale
         self.layout_version.fetch_add(1, Ordering::Release);

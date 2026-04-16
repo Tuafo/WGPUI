@@ -131,18 +131,20 @@ impl WgpuSurfaceHandle {
             .registry
             .swap_rendering_ready(self.inner.surface_id, submission_index);
 
-        // Track that this surface has new content to be composited
-        self.inner
+        // Only request a redraw if this is the first pending frame (coalescing).
+        // If redraw was already pending, the compositor will pick up our new
+        // content when it processes the earlier request.
+        let was_pending = self.inner
             .registry
             .set_redraw_pending(self.inner.surface_id);
 
-        if let Some(winit) = &self.inner.winit_window {
-            winit.request_redraw();
-        } else {
-            (self.inner.present_trigger)();
+        if !was_pending {
+            if let Some(winit) = &self.inner.winit_window {
+                winit.request_redraw();
+            } else {
+                (self.inner.present_trigger)();
+            }
         }
-
-        // Return immediately - no blocking
     }
 
     /// Present the rendered frame without GPU synchronization (deprecated).
@@ -159,18 +161,18 @@ impl WgpuSurfaceHandle {
             .registry
             .swap_rendering_ready_no_sync(self.inner.surface_id);
 
-        // Track that this surface has new content to be composited
-        self.inner
+        // Only request a redraw if this is the first pending frame (coalescing).
+        let was_pending = self.inner
             .registry
             .set_redraw_pending(self.inner.surface_id);
 
-        if let Some(winit) = &self.inner.winit_window {
-            winit.request_redraw();
-        } else {
-            (self.inner.present_trigger)();
+        if !was_pending {
+            if let Some(winit) = &self.inner.winit_window {
+                winit.request_redraw();
+            } else {
+                (self.inner.present_trigger)();
+            }
         }
-
-        // Return immediately - no blocking
     }
 
     /// Current size in device pixels.
